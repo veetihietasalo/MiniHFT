@@ -12,11 +12,11 @@ sequenceDiagram
     participant A as head / tail
     participant C as Consumer
     P->>P: write slot (plain stores)
-    P->>A: publish(): head.fetch_add(1, release)
+    P->>A: publish(): head.store(h + 1, release)
     A-->>C: peek(): head.load(acquire) sees the new head
     Note over P,C: Edge 1: the slot writes happen before the consumer's reads
     C->>C: read slot (plain loads)
-    C->>A: consume(): tail.fetch_add(1, release)
+    C->>A: consume(): tail.store(t + 1, release)
     A-->>P: claim(): tail.load(acquire) sees the new tail
     Note over P,C: Edge 2: the consumer's reads happen before the producer overwrites the slot
 ```
@@ -29,16 +29,19 @@ A release store and an acquire load that reads its value *synchronize*. Everythi
 |------|-----------|-------|-----|
 | `claim()` | `head.load` | relaxed | The producer is the only writer of `head`. Reading its own last store needs no synchronization. |
 | `claim()` | `tail.load` | **acquire** | Edge 2. Once the producer sees the consumer's new `tail`, the consumer's reads of the freed slot happen before the producer's upcoming writes. |
-| `publish()` | `head.fetch_add(1)` | **release** | Edge 1. Every write to the claimed slot happens before any consumer load that sees this `head`. |
+| `publish()` | `head.store(h + 1)` | **release** | Edge 1. Every write to the claimed slot happens before any consumer load that sees this `head`. |
 | `peek()` | `tail.load` | relaxed | The consumer is the only writer of `tail`. |
 | `peek()` | `head.load` | **acquire** | Edge 1. Seeing the new `head` makes the producer's slot writes visible. |
-| `consume()` | `tail.fetch_add(1)` | **release** | Edge 2. The consumer's *reads* of the slot happen before the producer overwrites it. This one is easy to forget, because it protects a read rather than a write. |
+| `consume()` | `tail.store(t + 1)` | **release** | Edge 2. The consumer's *reads* of the slot happen before the producer overwrites it. This one is easy to forget, because it protects a read rather than a write. |
 
-Using `fetch_add` (a locked read-modify-write) is correct but more than needed: each index has a single writer, so `store(h + 1, release)` is enough, and on x86 it is a plain `mov` instead of `lock inc`. Roadmap W03 makes and measures that change.
+Two refinements from W03 ([ring_buffer_v2.md](ring_buffer_v2.md)) keep these edges intact:
+
+- **`store` instead of `fetch_add`.** The original used `fetch_add`, a locked read-modify-write. Each index has a single writer, so a release `store` is enough. On x86 that's a plain `mov` instead of `lock inc`, and it made the queue about 6× faster.
+- **Cached indices.** `claim()` and `peek()` now keep a private copy of the other side's index and do the acquire load only when that copy says the queue is full or empty. The edges still hold: an acquire that returned `H` synchronizes with the release that stored `H`, and that release came after the writes to *every* slot below `H`. So all the slots the cached value lets the consumer read are covered, and the same holds for `tail` in the other direction.
 
 ## Breaking it on purpose
 
-[`tests/RelaxedPublishRingBuffer.hpp`](../tests/RelaxedPublishRingBuffer.hpp) is a copy of the queue with one change: `publish()` uses `memory_order_relaxed`. The consumer's acquire load then has no release to synchronize with, so edge 1 is gone.
+[`tests/RelaxedPublishRingBuffer.hpp`](../tests/RelaxedPublishRingBuffer.hpp) is a copy of the original (W02) queue with one change: `publish()` uses `memory_order_relaxed`. The consumer's acquire load then has no release to synchronize with, so edge 1 is gone.
 
 [`tests/relaxed_publish_demo.cpp`](../tests/relaxed_publish_demo.cpp) runs it through the [stress test](../tests/SpscStress.hpp). Each message is a full cache line: a sequence number, six payload words derived from it and a checksum. So a stale or half-written slot can't go unnoticed.
 
@@ -130,7 +133,7 @@ On x86 a `seq_cst` store has to drain the store buffer, which makes it 20–30×
 - Control paths where two threads must each see the other's write: sleep/wake handshakes for threads that block instead of spinning, shutdown and kill-switch handshakes, "last one out cleans up" logic.
 - Anywhere I can't prove release/acquire is enough. That's why it's `std::atomic`'s default.
 
-**Where I'd refuse:** the hot path of a queue like `RingBuffer`. Each index has one writer and data flows one way, so the two release/acquire edges are all the ordering it needs. A busy-spinning consumer never sleeps, so there's no wakeup to lose. A `seq_cst` store in `publish()` would cost ~12 ns per message instead of ~0.5 ns, for no correctness gain. Today's `fetch_add` already pays that price, because every locked read-modify-write is a full barrier on x86. Roadmap W03 replaces it with a release store.
+**Where I'd refuse:** the hot path of a queue like `RingBuffer`. Each index has one writer and data flows one way, so the two release/acquire edges are all the ordering it needs. A busy-spinning consumer never sleeps, so there's no wakeup to lose. A `seq_cst` store in `publish()` would cost ~12 ns per message instead of ~0.5 ns, for no correctness gain. The original `fetch_add` paid exactly that price, because every locked read-modify-write is a full barrier on x86. Replacing it with a release store in W03 took burst throughput from 39 to 6 ns per message ([ring_buffer_v2.md](ring_buffer_v2.md)).
 
 ## Reproduce
 

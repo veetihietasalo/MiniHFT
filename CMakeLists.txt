@@ -43,7 +43,7 @@ endforeach()
 set_target_properties(main PROPERTIES OUTPUT_NAME MiniHFT)
 
 # Latency harnesses: TSC timestamps into LatencyHistogram, reported as percentiles.
-foreach(harness IN ITEMS ring_latency orderbook_latency)
+foreach(harness IN ITEMS ring_latency ring_study orderbook_latency)
     add_executable(${harness} bench/${harness}.cpp)
     target_link_libraries(${harness} PRIVATE minihft_core)
 endforeach()
@@ -63,6 +63,7 @@ if(MINIHFT_BUILD_TESTS)
     add_executable(minihft_tests
         tests/latency_histogram_test.cpp
         tests/ring_buffer_test.cpp
+        tests/ring_variants_test.cpp
         tests/thread_utils_test.cpp
         tests/tsc_test.cpp)
     target_link_libraries(minihft_tests PRIVATE minihft_core GTest::gtest_main)
