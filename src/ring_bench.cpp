@@ -5,6 +5,12 @@
 #include "RingBuffer.hpp"
 #include "ThreadUtils.hpp"
 
+#if defined(_MSC_VER)
+#include <intrin.h>     // __rdtsc
+#else
+#include <x86intrin.h>  // __rdtsc
+#endif
+
 // A simple message to pass around
 struct Message {
     uint64_t id;

@@ -2,51 +2,37 @@ name: Build and Test
 
 on:
   push:
-    branches: [ main, master ]
-  pull_request:
-    branches: [ main, master ]
+  workflow_dispatch:
 
 jobs:
-  build-windows:
-    runs-on: windows-latest
+  build:
+    name: ${{ matrix.preset }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: windows-latest, preset: msvc-release }
+          - { os: ubuntu-24.04, preset: gcc-release }
+          - { os: ubuntu-24.04, preset: clang-tsan }
 
     steps:
-    - uses: actions/checkout@v3
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-    - name: Setup MSVC
-      uses: microsoft/setup-msbuild@v1.1
+      - name: Install Ninja
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y ninja-build
 
-    - name: Build Ring Buffer Benchmark
-      run: |
-        call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
-        cl /EHsc /std:c++20 /O2 /I include src\ring_bench.cpp /Fe:ring_bench.exe
-      shell: cmd
+      # TSan can't map its shadow memory with the high ASLR entropy newer kernels use.
+      - name: Lower ASLR entropy for ThreadSanitizer
+        if: matrix.preset == 'clang-tsan'
+        run: sudo sysctl vm.mmap_rnd_bits=28
 
-    - name: Build ITCH Parser Test
-      run: |
-        call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
-        cl /EHsc /std:c++20 /I include src\gen_itch.cpp /Fe:gen_itch.exe
-        cl /EHsc /std:c++20 /I include src\itch_test.cpp /Fe:itch_test.exe
-      shell: cmd
+      - name: Configure
+        run: cmake --preset ${{ matrix.preset }}
 
-    - name: Build Hardware Benchmark
-      run: |
-        call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
-        cl /EHsc /std:c++20 /O2 /I include src\hw_bench.cpp /Fe:hw_bench.exe
-      shell: cmd
+      - name: Build
+        run: cmake --build --preset ${{ matrix.preset }}
 
-  build-linux:
-    runs-on: ubuntu-latest
-
-    steps:
-    - uses: actions/checkout@v3
-
-    - name: Install dependencies
-      run: sudo apt-get update && sudo apt-get install -y build-essential cmake
-
-    - name: Build with CMake
-      run: |
-        mkdir build
-        cd build
-        cmake -DCMAKE_BUILD_TYPE=Release ..
-        make -j$(nproc)
+      - name: Test
+        run: ctest --preset ${{ matrix.preset }}

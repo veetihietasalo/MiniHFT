@@ -1,0 +1,66 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": { "major": 3, "minor": 25, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "base",
+      "hidden": true,
+      "binaryDir": "${sourceDir}/build/${presetName}"
+    },
+    {
+      "name": "msvc-release",
+      "displayName": "MSVC Release",
+      "inherits": "base",
+      "architecture": { "value": "x64", "strategy": "set" },
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" }
+    },
+    {
+      "name": "linux-base",
+      "hidden": true,
+      "inherits": "base",
+      "generator": "Ninja",
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Linux" }
+    },
+    {
+      "name": "gcc-release",
+      "displayName": "GCC Release",
+      "inherits": "linux-base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_CXX_COMPILER": "g++"
+      }
+    },
+    {
+      "name": "clang-tsan",
+      "displayName": "Clang + ThreadSanitizer",
+      "inherits": "linux-base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "CMAKE_CXX_COMPILER": "clang++",
+        "MINIHFT_SANITIZER": "thread",
+        "MINIHFT_BUILD_BENCHMARKS": "OFF"
+      }
+    }
+  ],
+  "buildPresets": [
+    { "name": "msvc-release", "configurePreset": "msvc-release", "configuration": "Release" },
+    { "name": "gcc-release", "configurePreset": "gcc-release" },
+    { "name": "clang-tsan", "configurePreset": "clang-tsan" }
+  ],
+  "testPresets": [
+    {
+      "name": "test-base",
+      "hidden": true,
+      "output": { "outputOnFailure": true },
+      "execution": { "noTestsAction": "error" }
+    },
+    { "name": "msvc-release", "inherits": "test-base", "configurePreset": "msvc-release", "configuration": "Release" },
+    { "name": "gcc-release", "inherits": "test-base", "configurePreset": "gcc-release" },
+    {
+      "name": "clang-tsan",
+      "inherits": "test-base",
+      "configurePreset": "clang-tsan",
+      "environment": { "TSAN_OPTIONS": "halt_on_error=1 second_deadlock_stack=1" }
+    }
+  ]
+}

@@ -70,27 +70,26 @@ graph TB
 ## 🛠️ Build Instructions
 
 ### Prerequisites
-- **Windows**: Visual Studio 2022 (MSVC v19.44+)
-- **Linux**: GCC 11+ or Clang 14+
-- C++20 support required
+- **Windows**: Visual Studio 2022 or newer, CMake 3.25+
+- **Linux / WSL2**: GCC 13+ or Clang 18+, CMake 3.25+, Ninja
+- GoogleTest and Google Benchmark are downloaded automatically on first configure
 
-### Windows (MSVC)
+### Build and test
+Each preset builds into `build/<preset>/`:
+
+| Preset | Platform | Purpose |
+|--------|----------|---------|
+| `msvc-release` | Windows | Release build with MSVC |
+| `gcc-release` | Linux | Release build with GCC |
+| `clang-tsan` | Linux | Clang + ThreadSanitizer, for checking the lock-free code |
+
 ```bash
-# Direct compilation
-compile_direct.bat
-
-# Or using CMake
-mkdir build && cd build
-cmake ..
-cmake --build . --config Release
+cmake --preset gcc-release          # configure (use msvc-release on Windows)
+cmake --build --preset gcc-release  # build all programs, tests and benchmarks
+ctest --preset gcc-release          # run the unit tests
 ```
 
-### Linux (GCC/Clang)
-```bash
-mkdir build && cd build
-cmake -DCMAKE_BUILD_TYPE=Release ..
-make -j$(nproc)
-```
+On WSL, build from the Linux filesystem (e.g. `~/code/MiniHFT`) rather than `/mnt/c`: it's much faster, and timing numbers from `/mnt/c` are meaningless.
 
 ## 🎓 Learning Path
 
