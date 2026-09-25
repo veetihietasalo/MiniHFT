@@ -5,6 +5,7 @@
 #include <thread>
 
 #include "RingBuffer.hpp"
+#include "SpscStress.hpp"
 
 namespace {
 
@@ -66,34 +67,24 @@ TEST(RingBuffer, WrapsAroundManyTimes) {
     }
 }
 
-// One producer thread, one consumer thread. Run it under the clang-tsan preset:
-// ThreadSanitizer reports a data race if publish()/peek() stop synchronizing.
-TEST(RingBuffer, SpscDeliversEverySequenceNumberInOrder) {
-    constexpr uint64_t kCount = 200'000;
-    auto rb = std::make_unique<RingBuffer<uint64_t, 1024>>(); // over-aligned and > 8 KB: keep it off the stack
+// Two threads, one cache-line-sized message each. Run it under the clang-tsan preset:
+// ThreadSanitizer reports a data race if either release/acquire pair stops synchronizing.
+TEST(RingBuffer, SpscStressDeliversEveryMessageIntactAndInOrder) {
+    constexpr uint64_t kCount = 300'000;
+    const StressResult r = runSpscStress<RingBuffer<StressMessage, 1024>>(kCount);
+    EXPECT_EQ(r.received, kCount);
+    EXPECT_EQ(r.badSequence, 0u);
+    EXPECT_EQ(r.badPayload, 0u);
+    EXPECT_EQ(r.badChecksum, 0u);
+}
 
-    std::thread producer([&] {
-        for (uint64_t i = 0; i < kCount; ++i) {
-            uint64_t* slot = nullptr;
-            while ((slot = rb->claim()) == nullptr) std::this_thread::yield();
-            *slot = i;
-            rb->publish();
-        }
-    });
-
-    uint64_t expected = 0;
-    uint64_t firstMismatch = kCount; // kCount means "none"
-    while (expected < kCount) {
-        uint64_t* slot = rb->peek();
-        if (slot == nullptr) {
-            std::this_thread::yield();
-            continue;
-        }
-        if (*slot != expected && firstMismatch == kCount) firstMismatch = expected;
-        rb->consume();
-        ++expected;
-    }
-    producer.join();
-
-    EXPECT_EQ(firstMismatch, kCount) << "first out-of-order value at sequence " << firstMismatch;
+// An 8-slot queue is full or empty most of the time, so every slot changes hands constantly.
+// That leans on edge 2 (consume() release -> claim() acquire): the producer must never
+// overwrite a slot the consumer is still copying.
+TEST(RingBuffer, SpscStressWithTinyQueueNeverOverwritesUnreadSlots) {
+    constexpr uint64_t kCount = 100'000;
+    const StressResult r = runSpscStress<RingBuffer<StressMessage, 8>>(kCount);
+    EXPECT_EQ(r.received, kCount);
+    EXPECT_TRUE(r.clean()) << r.badSequence << " bad sequence, " << r.badPayload << " bad payload, "
+                           << r.badChecksum << " bad checksum";
 }
