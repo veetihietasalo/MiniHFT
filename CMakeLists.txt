@@ -68,6 +68,16 @@ if(MINIHFT_BUILD_TESTS)
     target_link_libraries(minihft_tests PRIVATE minihft_core GTest::gtest_main)
     include(GoogleTest)
     gtest_discover_tests(minihft_tests DISCOVERY_MODE PRE_TEST)
+
+    # Deliberately broken queue (publish() relaxed). In a ThreadSanitizer build this test
+    # passes only if TSan reports the data race: proof that the tool catches the bug.
+    add_executable(relaxed_publish_demo tests/relaxed_publish_demo.cpp)
+    target_link_libraries(relaxed_publish_demo PRIVATE minihft_core)
+    if(MINIHFT_SANITIZER STREQUAL "thread")
+        add_test(NAME TSan.CatchesRelaxedPublish COMMAND relaxed_publish_demo 20000)
+        set_tests_properties(TSan.CatchesRelaxedPublish PROPERTIES
+            PASS_REGULAR_EXPRESSION "WARNING: ThreadSanitizer: data race")
+    endif()
 endif()
 
 if(MINIHFT_BUILD_BENCHMARKS)

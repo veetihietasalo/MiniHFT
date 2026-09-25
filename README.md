@@ -212,6 +212,7 @@ This project demonstrates skills relevant to:
 ## 📖 Documentation
 
 - [C++ Learning Guide](docs/cpp_learning_guide.md) - Language features explained
+- [Memory Ordering in RingBuffer](docs/memory_ordering.md) - Why each `memory_order` is there, ThreadSanitizer catching a broken copy, x86 vs ARM
 - [Hard Mode Walkthrough](docs/hard_mode_walkthrough.md) - Advanced concepts
 - [Learning Roadmap](learning_roadmap.md) - Structured learning path
 
