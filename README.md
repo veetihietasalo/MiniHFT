@@ -38,7 +38,7 @@ graph TB
 ## 🚀 Features
 
 ### Core Infrastructure
-- ✅ **Lock-Free Ring Buffer** - Disruptor pattern, ~1.5μs latency
+- ✅ **Lock-Free Ring Buffer** - Disruptor pattern, ~50–70 ns median one-way latency between pinned cores
 - ✅ **Thread Pinning** - CPU core isolation for deterministic performance
 - ✅ **Zero-Copy Parsing** - Direct memory mapping, no allocations
 - ✅ **Cache Optimization** - `alignas(64)` to prevent false sharing
@@ -59,13 +59,48 @@ graph TB
 
 ## 📊 Performance
 
-| Component | Latency | Throughput |
-|-----------|---------|------------|
-| Ring Buffer (inter-thread) | ~1.5 μs | 1M+ msg/sec |
-| Order Book Match | ~50 ns | 20M+ ops/sec |
-| ITCH Parser | ~10 ns/msg | 100M+ msg/sec |
+Measured on an AMD Ryzen 9 9900X3D running with one CCD enabled and SMT off (6 cores), Windows 11 and WSL2. Timestamps come from the CPU's time-stamp counter, and percentiles from `LatencyHistogram` (at most 1.6 % bucket error). Every figure includes about 10 ns of timer overhead.
 
-*Benchmarked on Intel i7 @ 3.0GHz*
+### Ring buffer: one-way latency between two pinned threads
+
+`ring_latency`: one message every 1 µs from core 2 to core 3 (same CCD), 1,000,000 measured after 50,000 warm-up.
+
+| Configuration | p50 | p90 | p99 | p99.9 | max |
+|---------------|-----|-----|-----|-------|-----|
+| Windows, MSVC, high priority | 50 ns | 70 ns | 0.9 µs | 222 µs | 500 µs |
+| Windows, MSVC, normal priority | 70 ns | 80 ns | 140 µs | 530 µs | 1.06 ms |
+| Linux (WSL2), GCC 13, normal priority | 71 ns | 113 ns | 103 µs | 313 µs | 534 µs |
+
+- The hop itself is ~50–70 ns. The tail is set by the operating system: on a 6-core desktop the spinning threads get preempted. Across repeated runs, normal-priority medians ranged from 70 ns to 6 µs, and high-priority p99 from 0.9 to 16 µs. Isolated cores on native Linux (roadmap W03) should shrink the tail further.
+- Measured from each message's *scheduled* send time rather than its actual send time, p99.9 reaches several milliseconds. One stall delays every message queued behind it, and measuring from the actual send hides that (coordinated omission).
+- With back-to-back sends (`--interval-ns=0`) the median is 23–34 µs. That's queueing: each message waits behind up to 1,023 others.
+
+### Order book: `addOrder()` + `match()` per order
+
+`orderbook_latency`: the book holds a fixed number of resting orders per side (the depth). A *take* is an aggressive order that fills the best resting order; a *make* is a passive order that restores the depth at a random level. Times in ns.
+
+| Depth | Order | MSVC p50 | MSVC p99 | GCC 13 p50 | GCC 13 p99 |
+|------:|-------|---------:|---------:|-----------:|-----------:|
+| 10 | take | 122 | 131 | 40 | 81 |
+| 10 | make | 20 | 20 | 20 | 30 |
+| 100 | take | 191 | 202 | 91 | 101 |
+| 100 | make | 50 | 61 | 30 | 40 |
+| 1000 | take | 991 | 1,064 | 604 | 1,194 |
+| 1000 | make | 371 | 404 | 211 | 422 |
+
+Cost grows linearly with depth because each side of the book is a sorted `std::vector`: inserting at or erasing from the front shifts every other order. A take also allocates a `std::vector<Trade>` and reads the clock, which is likely why MSVC is 3× slower than GCC on a small book. Roadmap W04 replaces this structure.
+
+The ITCH parser is not benchmarked yet (roadmap W04).
+
+### Reproduce
+
+```bash
+cmake --preset gcc-release && cmake --build --preset gcc-release
+./build/gcc-release/ring_latency --high-priority   # SCHED_FIFO needs root on Linux
+./build/gcc-release/orderbook_latency
+```
+
+On Windows the programs are in `build/msvc-release/Release/`. Both print the CPU, compiler and core pinning with their results. `--help` lists the options.
 
 ## 🛠️ Build Instructions
 
@@ -141,8 +176,10 @@ itch_test.exe   # Parse and display
 
 ### Performance Benchmarks
 ```bash
-ring_bench.exe  # Ring buffer latency
-hw_bench.exe    # Hardware simulation
+ring_latency       # Ring buffer one-way latency percentiles
+orderbook_latency  # Order book latency percentiles by depth
+ring_buffer_bench  # Google Benchmark: single-thread push + pop
+hw_bench           # Hardware simulation
 ```
 
 ## 📚 Key Concepts Demonstrated
