@@ -54,6 +54,7 @@ StressResult runSpscStress(uint64_t count) {
             slot->checksum = stressChecksum(*slot);
             queue->publish();
         }
+        if constexpr (requires { queue->flush(); }) queue->flush(); // batched queues hold back the last few
     });
 
     for (uint64_t expected = 0; expected < count; ++expected) {
