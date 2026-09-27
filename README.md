@@ -46,6 +46,7 @@ graph TB
 ### Market Microstructure
 - ✅ **Limit Order Book** - Price-time priority matching engine
 - ✅ **L3 Order Book** - Price levels with a FIFO per level and O(1) lookup by order reference; a full NASDAQ trading day replayed through it ([design and results](docs/order_book.md))
+- ✅ **Strategy Hook** - A top-of-book listener passed as a template parameter and checked by a concept; inlined, and generating no code when unused. Hot paths are verified allocation-free in CI ([measurements](docs/zero_overhead.md))
 - ✅ **NASDAQ ITCH 5.0 Parser** - Streams NASDAQ's length-prefixed files (whole days, from a file or a `gzip -dc` pipe) and decodes every order message type
 - ✅ **Market Simulator** - Synthetic order flow generation
 
@@ -234,6 +235,7 @@ This project demonstrates skills relevant to:
 - [Memory Ordering in RingBuffer](docs/memory_ordering.md) - Why each `memory_order` is there, ThreadSanitizer catching a broken copy, x86 vs ARM
 - [RingBuffer v2](docs/ring_buffer_v2.md) - `fetch_add` → store, cached indices, false sharing and batching, each measured on its own
 - [The L3 Order Book](docs/order_book.md) - Design, bugs fixed in the old ITCH code, old vs new, and a full NASDAQ day replayed
+- [Zero-Overhead Extension Points](docs/zero_overhead.md) - Concepts for handlers and listeners, template vs virtual listener cost, the generated assembly, and zero-allocation tests
 - [Hard Mode Walkthrough](docs/hard_mode_walkthrough.md) - Advanced concepts
 - [Learning Roadmap](learning_roadmap.md) - Structured learning path
 

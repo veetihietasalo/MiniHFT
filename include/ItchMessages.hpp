@@ -200,11 +200,28 @@ namespace itch {
         return n;
     }
 
+    // What dispatch() needs from a handler: one method per message type it passes on, each
+    // taking (locate, timestamp, decoded message). A handler that misses one, or takes the
+    // wrong message type, fails here with a short error naming the requirement, not deep
+    // inside dispatch().
+    template <typename H>
+    concept ItchHandler = requires(H& h, uint16_t locate, uint64_t ts) {
+        h.onAdd(locate, ts, AddOrder{});
+        h.onExecuted(locate, ts, OrderExecuted{});
+        h.onExecutedWithPrice(locate, ts, OrderExecutedWithPrice{});
+        h.onCancel(locate, ts, OrderCancel{});
+        h.onDelete(locate, ts, OrderDelete{});
+        h.onReplace(locate, ts, OrderReplace{});
+        h.onTrade(locate, ts, Trade{});
+        h.onStockDirectory(locate, ts, StockDirectory{});
+        h.onSystemEvent(locate, ts, SystemEvent{});
+        h.onTradingAction(locate, ts, TradingAction{});
+    };
+
     // Calls the handler for each message type that matters to an order book or a symbol map.
-    // Every other type is ignored. The handler needs onAdd, onExecuted, onExecutedWithPrice,
-    // onCancel, onDelete, onReplace, onTrade, onStockDirectory, onSystemEvent and
-    // onTradingAction; each takes (locate, timestamp, decoded message).
-    template <typename Handler>
+    // Every other type is ignored. The handler is a template parameter, so every call is
+    // resolved at compile time and can be inlined.
+    template <ItchHandler Handler>
     void dispatch(const uint8_t* m, Handler& h) {
         const uint16_t locate = be16(m + 1);
         const uint64_t ts = be48(m + 5);
