@@ -131,6 +131,11 @@ Each preset builds into `build/<preset>/`:
 | `msvc-release` | Windows | Release build with MSVC |
 | `gcc-release` | Linux | Release build with GCC |
 | `clang-tsan` | Linux | Clang + ThreadSanitizer, for checking the lock-free code |
+| `clang-asan-ubsan` | Linux | Clang + AddressSanitizer + UndefinedBehaviorSanitizer |
+| `clang-fuzz` | Linux | libFuzzer target for the ITCH parser (`itch_fuzz`) |
+| `clang-tidy` | Linux | Configure only: the compile database clang-tidy runs on |
+
+Every preset treats warnings as errors. CI builds and tests the first four on each push, fuzzes for 60 s and runs clang-tidy; see [Code Quality](docs/code_quality.md).
 
 ```bash
 cmake --preset gcc-release          # configure (use msvc-release on Windows)
@@ -236,6 +241,7 @@ This project demonstrates skills relevant to:
 - [RingBuffer v2](docs/ring_buffer_v2.md) - `fetch_add` → store, cached indices, false sharing and batching, each measured on its own
 - [The L3 Order Book](docs/order_book.md) - Design, bugs fixed in the old ITCH code, old vs new, and a full NASDAQ day replayed
 - [Zero-Overhead Extension Points](docs/zero_overhead.md) - Concepts for handlers and listeners, template vs virtual listener cost, the generated assembly, and zero-allocation tests
+- [Code Quality](docs/code_quality.md) - Six bugs proven by failing tests and then fixed, hardened APIs, sanitizers, fuzzing, clang-tidy, and what CI checks
 - [Hard Mode Walkthrough](docs/hard_mode_walkthrough.md) - Advanced concepts
 - [Learning Roadmap](learning_roadmap.md) - Structured learning path
 

@@ -23,21 +23,21 @@ public:
 
     // Bucket for a value. `shift` is how many low bits get dropped: 0 below 128,
     // then one more for each doubling.
-    static constexpr std::size_t indexOf(uint64_t value) noexcept {
+    [[nodiscard]] static constexpr std::size_t indexOf(uint64_t value) noexcept {
         const unsigned width = static_cast<unsigned>(std::bit_width(value));
         const unsigned shift = width > kSubBucketBits ? width - kSubBucketBits : 0;
         return shift * kSubBucketHalf + static_cast<std::size_t>(value >> shift);
     }
 
     // Smallest value that maps to bucket `index`.
-    static constexpr uint64_t lowestEquivalent(std::size_t index) noexcept {
+    [[nodiscard]] static constexpr uint64_t lowestEquivalent(std::size_t index) noexcept {
         if (index < kSubBucketCount) return index;
         const unsigned shift = static_cast<unsigned>(index / kSubBucketHalf) - 1;
         return static_cast<uint64_t>(index - shift * kSubBucketHalf) << shift;
     }
 
     // Largest value that maps to bucket `index`.
-    static constexpr uint64_t highestEquivalent(std::size_t index) noexcept {
+    [[nodiscard]] static constexpr uint64_t highestEquivalent(std::size_t index) noexcept {
         if (index < kSubBucketCount) return index;
         const unsigned shift = static_cast<unsigned>(index / kSubBucketHalf) - 1;
         return lowestEquivalent(index) + ((uint64_t{1} << shift) - 1);
@@ -51,16 +51,19 @@ public:
         max_ = std::max(max_, value);
     }
 
-    uint64_t count() const noexcept { return count_; }
-    uint64_t min() const noexcept { return count_ ? min_ : 0; }
-    uint64_t max() const noexcept { return max_; }
-    double mean() const noexcept { return count_ ? static_cast<double>(sum_) / static_cast<double>(count_) : 0.0; }
+    [[nodiscard]] uint64_t count() const noexcept { return count_; }
+    [[nodiscard]] uint64_t min() const noexcept { return count_ ? min_ : 0; }
+    [[nodiscard]] uint64_t max() const noexcept { return max_; }
+    [[nodiscard]] double mean() const noexcept { return count_ ? static_cast<double>(sum_) / static_cast<double>(count_) : 0.0; }
 
     // Value at or below which `percentile` % of recorded values fall, reported as the
-    // top of its bucket (never above the exact max). percentile is in [0, 100].
-    uint64_t valueAtPercentile(double percentile) const noexcept {
+    // top of its bucket (never above the exact max). percentile is in [0, 100]; 0 or below,
+    // and NaN, give the minimum.
+    [[nodiscard]] uint64_t valueAtPercentile(double percentile) const noexcept {
         if (count_ == 0) return 0;
-        if (percentile <= 0.0) return min_;
+        // Written as !(p > 0) so NaN lands here too: converting NaN to an integer below
+        // would be undefined behaviour.
+        if (!(percentile > 0.0)) return min_;
         const double clamped = std::min(percentile, 100.0);
         const auto rank = std::max<uint64_t>(1, static_cast<uint64_t>(std::ceil(clamped / 100.0 * static_cast<double>(count_))));
 

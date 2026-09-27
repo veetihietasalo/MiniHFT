@@ -17,6 +17,7 @@
 #include <cstdio>
 #include <cstring>
 #include <memory>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -24,6 +25,7 @@
 #include "ItchBook.hpp"
 #include "ItchMessages.hpp"
 #include "ItchParser.hpp"
+#include "L3OrderBook.hpp"
 #include "LatencyHistogram.hpp"
 #include "Listeners.hpp"
 #include "ThreadUtils.hpp"
@@ -114,9 +116,8 @@ int replay(Builder& builder, std::FILE* file, bool timeEach, const std::vector<s
 
     std::printf("Top of book (price x shares; last = last execution):\n");
     const auto wallStart = std::chrono::steady_clock::now();
-    size_t length = 0;
-    while (const uint8_t* m = reader.next(length)) {
-        if (nextSnapshot < snapshotTimes.size() && itch::be48(m + 5) >= snapshotTimes[nextSnapshot]) {
+    for (std::span<const uint8_t> m = reader.next(); !m.empty(); m = reader.next()) {
+        if (nextSnapshot < snapshotTimes.size() && itch::be48(m.data() + 5) >= snapshotTimes[nextSnapshot]) {
             printSnapshot(snapshotTimes[nextSnapshot++], builder, symbols);
         }
         LatencyHistogram* h = latencies->forType(char(m[0]));
@@ -140,7 +141,8 @@ int replay(Builder& builder, std::FILE* file, bool timeEach, const std::vector<s
 
     std::printf("\nInput\n");
     std::printf("  %llu messages, %.2f GB, %.1f s: %.2f M messages/s end to end (read + parse + book)\n",
-                ull(reader.messages()), reader.bytes() / 1e9, seconds, reader.messages() / seconds / 1e6);
+                ull(reader.messages()), static_cast<double>(reader.bytes()) / 1e9, seconds,
+                static_cast<double>(reader.messages()) / seconds / 1e6);
     if (timeEach && bookMessages > 0) {
         std::printf("  book updates alone: %.1f ns per order message on average (%llu order messages)\n",
                     static_cast<double>(bookTicks) / ticksPerNs / static_cast<double>(bookMessages), ull(bookMessages));
@@ -156,14 +158,15 @@ int replay(Builder& builder, std::FILE* file, bool timeEach, const std::vector<s
     const char* depthLabels[] = {"top", "2nd", "3rd-5th", "6th-10th", "11th-50th", "51st+"};
     std::printf("  where book changes land, in price levels from the top of their side:\n   ");
     for (size_t i = 0; i < s.depthHistogram.size(); ++i) {
-        std::printf(" %s %.1f%%", depthLabels[i], depthTotal ? 100.0 * s.depthHistogram[i] / depthTotal : 0.0);
+        std::printf(" %s %.1f%%", depthLabels[i], depthTotal ? 100.0 * static_cast<double>(s.depthHistogram[i]) / static_cast<double>(depthTotal) : 0.0);
     }
     std::printf("\n");
 
     std::printf("\nConsistency checks (all should be 0)\n");
     std::printf("  wrong message lengths %llu, unknown message types %llu, truncated input %s\n",
                 ull(reader.lengthMismatches()), ull(reader.unknownTypes()), reader.truncated() ? "YES" : "no");
-    std::printf("  events for unknown orders %llu, over-executions %llu\n", ull(s.unknownRefs), ull(s.overExecutions));
+    std::printf("  events for unknown orders %llu, over-executions %llu, reused live reference numbers %llu\n",
+                ull(s.unknownRefs), ull(s.overExecutions), ull(s.duplicateRefs));
     std::printf("  crossed books during market hours: %llu while the symbol was trading, %llu while halted, paused or quote-only\n",
                 ull(s.crossedWhileTrading), ull(s.crossedDuringMarket - s.crossedWhileTrading));
     std::printf("  (trading-action messages: %llu)\n", ull(s.tradingActions));
@@ -203,7 +206,7 @@ int replay(Builder& builder, std::FILE* file, bool timeEach, const std::vector<s
     }
 
     const bool ok = reader.lengthMismatches() == 0 && reader.unknownTypes() == 0 && !reader.truncated() &&
-                    s.unknownRefs == 0 && s.overExecutions == 0;
+                    s.unknownRefs == 0 && s.overExecutions == 0 && s.duplicateRefs == 0;
     return ok ? 0 : 1;
 }
 

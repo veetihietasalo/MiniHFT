@@ -1,14 +1,19 @@
 #include <gtest/gtest.h>
 
+#include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <span>
 #include <vector>
 
 #include "../bench/Listeners.hpp"
 #include "AllocationCounter.hpp"
 #include "ItchBook.hpp"
 #include "ItchMessages.hpp"
+#include "L3OrderBook.hpp"
 #include "LatencyHistogram.hpp"
+#include "ObjectPool.hpp"
+#include "Order.hpp"
 #include "OrderBook.hpp"
 #include "RingBuffer.hpp"
 
@@ -23,6 +28,8 @@ void* volatile g_sink = nullptr;
 
 struct Encoded {
     uint8_t bytes[64];
+    size_t length;
+    std::span<const uint8_t> message() const { return {bytes, length}; }
 };
 
 // One round of order flow for one instrument, ending with an empty book: 400 adds over 20 price
@@ -33,7 +40,7 @@ std::vector<Encoded> orderFlowRound(uint64_t refBase) {
     std::vector<Encoded> flow;
     auto emit = [&](auto encode) {
         flow.push_back({});
-        encode(flow.back().bytes);
+        flow.back().length = encode(flow.back().bytes);
     };
     auto priceFor = [](char side, uint32_t level) {
         return side == 'B' ? 1'000'000 - level * 100 : 1'000'100 + level * 100;
@@ -66,11 +73,15 @@ template <typename Builder>
 size_t steadyStateAllocations(Builder& builder) {
     const std::vector<Encoded> warmup = orderFlowRound(1);
     const std::vector<Encoded> measured = orderFlowRound(1'000'000);
-    for (const Encoded& m : warmup) itch::dispatch(m.bytes, builder);
+    for (const Encoded& m : warmup) EXPECT_TRUE(itch::dispatch(m.message(), builder));
     EXPECT_EQ(builder.stats().liveOrders, 0u);
+    size_t dispatched = 0;
     const size_t allocations = countAllocations([&] {
-        for (const Encoded& m : measured) itch::dispatch(m.bytes, builder);
+        for (const Encoded& m : measured) {
+            if (itch::dispatch(m.message(), builder)) ++dispatched;
+        }
     });
+    EXPECT_EQ(dispatched, measured.size());
     EXPECT_EQ(builder.stats().liveOrders, 0u);
     EXPECT_EQ(builder.stats().unknownRefs, 0u);
     return allocations;
@@ -97,14 +108,31 @@ TEST(ZeroAlloc, RingBufferPushPop) {
     uint64_t sum = 0;
     const size_t allocations = countAllocations([&] {
         for (uint64_t i = 0; i < 100'000; ++i) {
-            *ring->claim() = i;
+            uint64_t* slot = ring->claim();
+            ASSERT_NE(slot, nullptr);
+            *slot = i;
             ring->publish();
-            sum += *ring->peek();
+            const uint64_t* front = ring->peek();
+            ASSERT_NE(front, nullptr);
+            sum += *front;
             ring->consume();
         }
     });
     EXPECT_EQ(allocations, 0u);
     EXPECT_EQ(sum, 100'000ull * 99'999 / 2);
+}
+
+// release() must never allocate, even past the most objects ever released before: a burst of
+// cancels shouldn't hit the heap because the pool's bookkeeping needs to grow.
+TEST(ZeroAlloc, ObjectPoolReleaseNeverAllocates) {
+    auto pool = std::make_unique<ObjectPool<BookOrder, 4096>>();
+    std::vector<BookOrder*> live;
+    live.reserve(3000);
+    for (int i = 0; i < 3000; ++i) live.push_back(pool->acquire());
+    const size_t allocations = countAllocations([&] {
+        for (BookOrder* o : live) pool->release(o);
+    });
+    EXPECT_EQ(allocations, 0u);
 }
 
 TEST(ZeroAlloc, LatencyHistogramRecord) {
@@ -140,6 +168,7 @@ TEST(ZeroAlloc, OriginalOrderBookAllocatesOnEveryMatch) {
     OrderId id = 1;
     for (int i = 0; i < 100; ++i) book.addOrder(Order(id++, Side::Sell, 100.01 + 0.01 * i, 10));
     std::vector<Order> takes;
+    takes.reserve(50);
     for (int i = 0; i < 50; ++i) takes.emplace_back(id++, Side::Buy, 1e9, 10); // each fills one resting order
     const size_t allocations = countAllocations([&] {
         for (const Order& o : takes) {

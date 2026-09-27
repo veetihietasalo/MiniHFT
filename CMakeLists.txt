@@ -7,31 +7,67 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 option(MINIHFT_BUILD_TESTS "Build unit tests (fetches GoogleTest)" ON)
 option(MINIHFT_BUILD_BENCHMARKS "Build benchmarks (fetches Google Benchmark)" ON)
-set(MINIHFT_SANITIZER "" CACHE STRING "GCC/Clang sanitizer to build everything with: thread, address, undefined")
+option(MINIHFT_BUILD_FUZZERS "Build libFuzzer targets (Clang only)" OFF)
+option(MINIHFT_WARNINGS_AS_ERRORS "Treat warnings in MiniHFT's own code as errors" OFF)
+set(MINIHFT_SANITIZER "" CACHE STRING "GCC/Clang sanitizers to build everything with, e.g. thread or address,undefined")
 
 # Sanitizers go on every target, dependencies included: TSan needs all code
 # that touches shared memory to be instrumented to avoid false reports.
+# -fno-sanitize-recover makes the first report stop the program, so a test can't pass after one.
 if(MINIHFT_SANITIZER)
     if(MSVC)
         message(FATAL_ERROR "MINIHFT_SANITIZER is only supported with GCC/Clang")
     endif()
-    add_compile_options(-fsanitize=${MINIHFT_SANITIZER} -fno-omit-frame-pointer -g)
+    add_compile_options(-fsanitize=${MINIHFT_SANITIZER} -fno-sanitize-recover=all -fno-omit-frame-pointer -g)
     add_link_options(-fsanitize=${MINIHFT_SANITIZER})
 endif()
 
 find_package(Threads REQUIRED)
 
 # Header-only core: programs, tests and benchmarks link this for the include path and warnings.
+# The warnings apply to our own code only; dependencies are included as SYSTEM headers.
 add_library(minihft_core INTERFACE)
 target_include_directories(minihft_core INTERFACE include)
 target_link_libraries(minihft_core INTERFACE Threads::Threads)
 if(MSVC)
-    target_compile_options(minihft_core INTERFACE /W4)
+    # C4324 "structure was padded due to alignment specifier": that padding is the point of alignas(64).
+    target_compile_options(minihft_core INTERFACE /W4 /wd4324)
     # Standard fopen/tmpfile, not MSVC's non-portable *_s replacements.
     target_compile_definitions(minihft_core INTERFACE _CRT_SECURE_NO_WARNINGS)
+    if(MINIHFT_WARNINGS_AS_ERRORS)
+        target_compile_options(minihft_core INTERFACE /WX)
+    endif()
 else()
-    target_compile_options(minihft_core INTERFACE -Wall -Wextra -Wpedantic)
+    target_compile_options(minihft_core INTERFACE
+        -Wall -Wextra -Wpedantic
+        -Wshadow -Wconversion -Wsign-conversion -Wold-style-cast -Wdouble-promotion
+        -Wnon-virtual-dtor -Woverloaded-virtual -Wformat=2 -Wimplicit-fallthrough
+        # -Wnull-dereference runs after inlining, and GCC reports it inside GoogleTest's own
+        # assertion code even from a SYSTEM header, so the test binary goes without it.
+        $<$<NOT:$<STREQUAL:$<TARGET_PROPERTY:NAME>,minihft_tests>>:-Wnull-dereference>)
+    if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+        target_compile_options(minihft_core INTERFACE -Wduplicated-cond -Wlogical-op)
+    endif()
+    if(MINIHFT_WARNINGS_AS_ERRORS)
+        target_compile_options(minihft_core INTERFACE -Werror)
+    endif()
 endif()
+
+# Every header must compile on its own: one generated source file per header, which includes
+# only that header. A header that leans on its includer's includes fails here, and headers no
+# program includes still get compiled with the warnings above.
+file(GLOB MINIHFT_HEADERS CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/include/*.hpp")
+if(NOT WIN32)
+    list(FILTER MINIHFT_HEADERS EXCLUDE REGEX "/Network\\.hpp$")
+endif()
+foreach(header IN LISTS MINIHFT_HEADERS)
+    get_filename_component(name "${header}" NAME)
+    set(check "${CMAKE_CURRENT_BINARY_DIR}/header_check/${name}.cpp")
+    file(CONFIGURE OUTPUT "${check}" CONTENT "#include \"${name}\"\n")
+    list(APPEND MINIHFT_HEADER_CHECKS "${check}")
+endforeach()
+add_library(minihft_header_check OBJECT ${MINIHFT_HEADER_CHECKS})
+target_link_libraries(minihft_header_check PRIVATE minihft_core)
 
 # One executable per program: each file in src/ has its own main().
 set(MINIHFT_PROGRAMS main gen_itch itch_test hw_bench ring_bench)
@@ -56,7 +92,8 @@ if(MINIHFT_BUILD_TESTS)
     FetchContent_Declare(googletest
         URL https://github.com/google/googletest/archive/refs/tags/v1.15.2.tar.gz
         URL_HASH SHA256=7b42b4d6ed48810c5362c265a17faebe90dc2373c885e5216439d37927f02926
-        DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
+        DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+        SYSTEM) # its headers can't trigger our warnings
     set(gtest_force_shared_crt ON CACHE BOOL "" FORCE) # match MSVC's default /MD runtime
     set(INSTALL_GTEST OFF CACHE BOOL "" FORCE)
     FetchContent_MakeAvailable(googletest)
@@ -98,7 +135,8 @@ if(MINIHFT_BUILD_BENCHMARKS)
     FetchContent_Declare(benchmark
         URL https://github.com/google/benchmark/archive/refs/tags/v1.9.1.tar.gz
         URL_HASH SHA256=32131c08ee31eeff2c8968d7e874f3cb648034377dfc32a4c377fa8796d84981
-        DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
+        DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+        SYSTEM) # its headers can't trigger our warnings
     set(BENCHMARK_ENABLE_TESTING OFF CACHE BOOL "" FORCE)
     set(BENCHMARK_ENABLE_GTEST_TESTS OFF CACHE BOOL "" FORCE)
     set(BENCHMARK_ENABLE_INSTALL OFF CACHE BOOL "" FORCE)
@@ -107,4 +145,15 @@ if(MINIHFT_BUILD_BENCHMARKS)
 
     add_executable(ring_buffer_bench bench/ring_buffer_bench.cpp)
     target_link_libraries(ring_buffer_bench PRIVATE minihft_core benchmark::benchmark)
+endif()
+
+# Coverage-guided fuzzing of the ITCH reader and dispatch (clang-fuzz preset).
+if(MINIHFT_BUILD_FUZZERS)
+    if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        message(FATAL_ERROR "MINIHFT_BUILD_FUZZERS needs Clang (libFuzzer)")
+    endif()
+    add_executable(itch_fuzz tests/fuzz/itch_fuzz.cpp)
+    target_link_libraries(itch_fuzz PRIVATE minihft_core)
+    target_compile_options(itch_fuzz PRIVATE -fsanitize=fuzzer)
+    target_link_options(itch_fuzz PRIVATE -fsanitize=fuzzer)
 endif()

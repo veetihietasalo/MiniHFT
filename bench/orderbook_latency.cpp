@@ -19,14 +19,18 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <memory>
 #include <random>
 #include <vector>
 
 #include "BenchCommon.hpp"
 #include "ItchBook.hpp"
-#include "Listeners.hpp"
+#include "ItchMessages.hpp"
+#include "L3OrderBook.hpp"
 #include "LatencyHistogram.hpp"
+#include "Listeners.hpp"
+#include "Order.hpp"
 #include "OrderBook.hpp"
 #include "ThreadUtils.hpp"
 #include "Tsc.hpp"
@@ -68,8 +72,8 @@ std::unique_ptr<DepthResult> runOld(long long depth, const std::vector<Round>& r
     OrderBook book;
     OrderId nextId = 1;
     for (long long i = 0; i < depth; ++i) {
-        book.addOrder(Order(nextId++, Side::Buy, kBestBid - kTick * i, kQty));
-        book.addOrder(Order(nextId++, Side::Sell, kBestAsk + kTick * i, kQty));
+        book.addOrder(Order(nextId++, Side::Buy, kBestBid - kTick * static_cast<double>(i), kQty));
+        book.addOrder(Order(nextId++, Side::Sell, kBestAsk + kTick * static_cast<double>(i), kQty));
     }
 
     std::vector<Order> flow; // two orders per round: the take, then the make
@@ -77,10 +81,10 @@ std::unique_ptr<DepthResult> runOld(long long depth, const std::vector<Round>& r
     for (const Round& r : rounds) {
         if (r.buyerTakes) {
             flow.emplace_back(nextId++, Side::Buy, 1e9, kQty);                     // lifts the best ask
-            flow.emplace_back(nextId++, Side::Sell, kBestAsk + kTick * r.level, kQty);
+            flow.emplace_back(nextId++, Side::Sell, kBestAsk + kTick * static_cast<double>(r.level), kQty);
         } else {
             flow.emplace_back(nextId++, Side::Sell, kTick, kQty);                  // hits the best bid
-            flow.emplace_back(nextId++, Side::Buy, kBestBid - kTick * r.level, kQty);
+            flow.emplace_back(nextId++, Side::Buy, kBestBid - kTick * static_cast<double>(r.level), kQty);
         }
     }
 
@@ -96,6 +100,18 @@ std::unique_ptr<DepthResult> runOld(long long depth, const std::vector<Round>& r
         (i % 2 == 0 ? result->take : result->make).record(t1 - t0);
     }
     return result;
+}
+
+// Reference number of the first order in line at one side's best price: the order a take
+// executes. The benchmark keeps both sides at `depth` orders, so a side is never empty; stop
+// loudly if one ever is.
+uint64_t frontOfBest(const L3OrderBook& book, bool askSide) {
+    const PriceLevel* best = askSide ? book.bestAsk() : book.bestBid();
+    if (best == nullptr || best->head == nullptr) {
+        std::fprintf(stderr, "orderbook_latency: a book side is unexpectedly empty\n");
+        std::abort();
+    }
+    return best->head->ref;
 }
 
 template <typename Builder, typename Listener = NoListener>
@@ -114,9 +130,7 @@ std::unique_ptr<DepthResult> runNew(long long depth, const std::vector<Round>& r
     auto result = std::make_unique<DepthResult>();
     for (std::size_t n = 0; n < rounds.size(); ++n) {
         const Round& r = rounds[n];
-        const L3OrderBook& book = builder->book(kLocate);
-        const PriceLevel* best = r.buyerTakes ? book.bestAsk() : book.bestBid();
-        const uint64_t ref = best->head->ref; // the feed names the executed order; look it up outside the timing
+        const uint64_t ref = frontOfBest(builder->book(kLocate), r.buyerTakes); // looked up outside the timing
 
         const uint64_t t0 = Tsc::read();
         builder->onExecuted(kLocate, 0, itch::OrderExecuted{ref, kQty, 0});
@@ -152,8 +166,7 @@ double meanNsPerEvent(long long depth, const std::vector<Round>& rounds, double 
         }
         const uint64_t t0 = Tsc::read();
         for (const Round& r : rounds) {
-            const L3OrderBook& book = builder->book(kLocate);
-            const uint64_t ref = (r.buyerTakes ? book.bestAsk() : book.bestBid())->head->ref;
+            const uint64_t ref = frontOfBest(builder->book(kLocate), r.buyerTakes);
             builder->onExecuted(kLocate, 0, itch::OrderExecuted{ref, kQty, 0});
             if (r.buyerTakes) add('S', kBestAskItch + kTickItch * static_cast<uint32_t>(r.level));
             else add('B', kBestBidItch - kTickItch * static_cast<uint32_t>(r.level));

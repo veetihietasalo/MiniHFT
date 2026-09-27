@@ -4,6 +4,10 @@ on:
   push:
   workflow_dispatch:
 
+# Nothing here writes to the repository.
+permissions:
+  contents: read
+
 jobs:
   build:
     name: ${{ matrix.preset }}
@@ -15,6 +19,7 @@ jobs:
           - { os: windows-latest, preset: msvc-release }
           - { os: ubuntu-24.04, preset: gcc-release }
           - { os: ubuntu-24.04, preset: clang-tsan }
+          - { os: ubuntu-24.04, preset: clang-asan-ubsan }
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -23,9 +28,10 @@ jobs:
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y ninja-build
 
-      # TSan can't map its shadow memory with the high ASLR entropy newer kernels use.
-      - name: Lower ASLR entropy for ThreadSanitizer
-        if: matrix.preset == 'clang-tsan'
+      # The sanitizer runtimes can't map their shadow memory with the high ASLR entropy newer
+      # kernels use.
+      - name: Lower ASLR entropy for the sanitizers
+        if: startsWith(matrix.preset, 'clang-')
         run: sudo sysctl vm.mmap_rnd_bits=28
 
       - name: Configure
@@ -36,3 +42,67 @@ jobs:
 
       - name: Test
         run: ctest --preset ${{ matrix.preset }}
+
+  # Coverage-guided fuzzing of the ITCH reader and dispatch, under ASan and UBSan.
+  fuzz:
+    name: fuzz (itch_fuzz, 60 s)
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Ninja
+        run: sudo apt-get update && sudo apt-get install -y ninja-build
+
+      - name: Lower ASLR entropy for the sanitizers
+        run: sudo sysctl vm.mmap_rnd_bits=28
+
+      - name: Configure
+        run: cmake --preset clang-fuzz
+
+      - name: Build
+        run: cmake --build --preset clang-fuzz
+
+      # Saved inputs (earlier crashes) plus gen_itch's sample feed as a starting point.
+      - name: Seed the corpus
+        run: |
+          mkdir corpus
+          cp tests/fuzz/corpus/* corpus/
+          (cd corpus && ../build/clang-fuzz/gen_itch)
+
+      - name: Fuzz
+        run: ./build/clang-fuzz/itch_fuzz -max_total_time=60 -timeout=10 -print_final_stats=1 corpus
+
+      - name: Show the input that failed
+        if: failure()
+        run: |
+          for f in crash-* leak-* timeout-* oom-*; do
+            [ -f "$f" ] && { echo "== $f"; od -A d -t x1 "$f" | head -64; }
+          done
+          true
+
+  # Static analysis with the checks in .clang-tidy; any finding fails the job.
+  clang-tidy:
+    name: clang-tidy
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Ninja and clang-tidy
+        run: sudo apt-get update && sudo apt-get install -y ninja-build clang-tidy-18
+
+      - name: Configure (compile database only)
+        run: cmake --preset clang-tidy
+
+      # Our own source files from the compile database; headers are checked through them.
+      - name: clang-tidy
+        run: |
+          jq -r '.[].file' build/clang-tidy/compile_commands.json | grep -E "^$PWD/(src|bench|tests)/" | sort -u > tidy-files.txt
+          test -s tidy-files.txt
+          echo "$(wc -l < tidy-files.txt) source files"
+          xargs -d '\n' -P "$(nproc)" -n 2 clang-tidy-18 -p build/clang-tidy --quiet < tidy-files.txt

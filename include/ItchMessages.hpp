@@ -14,16 +14,17 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <span>
 
 namespace itch {
 
     // ---- big-endian helpers ----
-    inline uint16_t be16(const uint8_t* p) { return static_cast<uint16_t>(p[0] << 8 | p[1]); }
-    inline uint32_t be32(const uint8_t* p) {
+    [[nodiscard]] constexpr uint16_t be16(const uint8_t* p) { return static_cast<uint16_t>(p[0] << 8 | p[1]); }
+    [[nodiscard]] constexpr uint32_t be32(const uint8_t* p) {
         return uint32_t{p[0]} << 24 | uint32_t{p[1]} << 16 | uint32_t{p[2]} << 8 | uint32_t{p[3]};
     }
-    inline uint64_t be48(const uint8_t* p) { return uint64_t{be16(p)} << 32 | be32(p + 2); }
-    inline uint64_t be64(const uint8_t* p) { return uint64_t{be32(p)} << 32 | be32(p + 4); }
+    [[nodiscard]] constexpr uint64_t be48(const uint8_t* p) { return uint64_t{be16(p)} << 32 | be32(p + 2); }
+    [[nodiscard]] constexpr uint64_t be64(const uint8_t* p) { return uint64_t{be32(p)} << 32 | be32(p + 4); }
 
     inline void putBe16(uint8_t* p, uint16_t v) { p[0] = uint8_t(v >> 8); p[1] = uint8_t(v); }
     inline void putBe32(uint8_t* p, uint32_t v) { putBe16(p, uint16_t(v >> 16)); putBe16(p + 2, uint16_t(v)); }
@@ -219,10 +220,16 @@ namespace itch {
     };
 
     // Calls the handler for each message type that matters to an order book or a symbol map.
-    // Every other type is ignored. The handler is a template parameter, so every call is
-    // resolved at compile time and can be inlined.
+    // Every other well-formed type is ignored. The handler is a template parameter, so every
+    // call is resolved at compile time and can be inlined.
+    //
+    // Returns false, calling nothing, if `message` isn't exactly as long as its type requires
+    // (or its type is unknown). The decoders read fixed offsets, so a short message would be
+    // read past its end.
     template <ItchHandler Handler>
-    void dispatch(const uint8_t* m, Handler& h) {
+    bool dispatch(std::span<const uint8_t> message, Handler& h) {
+        if (message.empty() || message.size() != messageLength(char(message[0]))) return false;
+        const uint8_t* m = message.data();
         const uint16_t locate = be16(m + 1);
         const uint64_t ts = be48(m + 5);
         switch (char(m[0])) {
@@ -239,5 +246,6 @@ namespace itch {
             case 'H': h.onTradingAction(locate, ts, decodeTradingAction(m)); break;
             default: break;
         }
+        return true;
     }
 }

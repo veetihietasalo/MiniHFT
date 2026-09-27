@@ -1,60 +1,65 @@
 #pragma once
 
-#include <vector>
-#include <memory>
-#include <cassert>
-
+#include <algorithm>
 #include <cstddef>
+#include <memory>
 #include <new>
+#include <utility>
+#include <vector>
 
-// Hands out T objects from large blocks and recycles released ones, so steady-state acquire()
-// and release() never call the heap. Objects never move: blocks are separate allocations.
-// The pool doesn't destroy objects that are still acquired when it is destroyed.
+// Hands out T objects from large blocks and recycles released ones. Objects never move: every
+// block is its own allocation.
+//
+// acquire() calls the heap only when every block is in use and a new one is needed. release()
+// never does: released slots form an intrusive free list, where a released slot's own memory
+// holds the pointer to the next free slot, so there is no side container that could need to
+// grow. The pool doesn't destroy objects that are still acquired when it is destroyed.
 template <typename T, size_t BlockSize = 4096>
 class ObjectPool {
-    static_assert(alignof(T) <= alignof(std::max_align_t), "blocks are only max_align_t aligned");
+    static_assert(BlockSize > 0);
 
-private:
-    struct Block {
-        std::unique_ptr<char[]> memory;
-        size_t offset = 0;
-
-        Block() : memory(std::make_unique<char[]>(BlockSize * sizeof(T))) {}
+    struct FreeSlot {
+        FreeSlot* next;
     };
 
-    std::vector<Block> blocks;
-    std::vector<T*> freeList;
+    // Every slot must be able to hold either a T or a FreeSlot.
+    static constexpr size_t kAlign = std::max(alignof(T), alignof(FreeSlot));
+    static constexpr size_t kStride = (std::max(sizeof(T), sizeof(FreeSlot)) + kAlign - 1) / kAlign * kAlign;
+    static_assert(kAlign <= __STDCPP_DEFAULT_NEW_ALIGNMENT__, "blocks only get operator new[]'s default alignment");
 
 public:
-    ObjectPool() {
-        // Allocate first block
-        blocks.emplace_back();
-    }
+    ObjectPool() { addBlock(); }
+    ObjectPool(const ObjectPool&) = delete;
+    ObjectPool& operator=(const ObjectPool&) = delete;
 
+    // Constructs a T in a free slot: the most recently released one, or the next unused one.
     template <typename... Args>
-    T* acquire(Args&&... args) {
-        if (!freeList.empty()) {
-            T* ptr = freeList.back();
-            freeList.pop_back();
-            new (ptr) T(std::forward<Args>(args)...); // Placement new
-            return ptr;
+    [[nodiscard]] T* acquire(Args&&... args) {
+        void* slot = nullptr;
+        if (freeHead_ != nullptr) {
+            slot = freeHead_;
+            freeHead_ = freeHead_->next;
+        } else {
+            if (used_ == BlockSize) addBlock();
+            slot = blocks_.back().get() + used_ * kStride;
+            ++used_;
         }
-
-        // Grow first, then take the reference: emplace_back may reallocate `blocks`, and a
-        // reference can't be re-pointed afterwards (assigning to it would copy into the old block).
-        if (blocks.back().offset >= BlockSize) {
-            blocks.emplace_back();
-        }
-        Block& current = blocks.back();
-
-        T* ptr = reinterpret_cast<T*>(current.memory.get() + current.offset * sizeof(T));
-        current.offset++;
-        new (ptr) T(std::forward<Args>(args)...);
-        return ptr;
+        return ::new (slot) T(std::forward<Args>(args)...);
     }
 
-    void release(T* ptr) {
-        ptr->~T(); // Call destructor
-        freeList.push_back(ptr);
+    // Destroys the object and puts its slot at the front of the free list.
+    void release(T* object) noexcept {
+        object->~T();
+        freeHead_ = ::new (static_cast<void*>(object)) FreeSlot{freeHead_};
     }
+
+private:
+    void addBlock() {
+        blocks_.push_back(std::make_unique<std::byte[]>(BlockSize * kStride));
+        used_ = 0;
+    }
+
+    std::vector<std::unique_ptr<std::byte[]>> blocks_;
+    size_t used_ = 0;              // slots handed out from the newest block
+    FreeSlot* freeHead_ = nullptr; // most recently released slot
 };

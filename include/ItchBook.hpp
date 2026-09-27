@@ -57,6 +57,7 @@ struct CrossedEvent {
 struct ItchBookStats {
     uint64_t adds = 0, executions = 0, cancels = 0, deletes = 0, replaces = 0, trades = 0;
     uint64_t unknownRefs = 0;         // execute/cancel/delete/replace for an order we don't have
+    uint64_t duplicateRefs = 0;       // add or replace reusing a reference number that's still live (ignored)
     uint64_t overExecutions = 0;      // executed or cancelled more shares than the order had left
     uint64_t crossedDuringMarket = 0; // an add or replace left the book crossed during market hours
     uint64_t crossedWhileTrading = 0; // ... and the symbol's trading state was 'T' (not halted or paused)
@@ -161,23 +162,23 @@ public:
     }
 
     // ---- queries ----
-    const L3OrderBook& book(uint16_t locate) const { return books_[locate]; }
-    const std::string& symbol(uint16_t locate) const { return symbols_[locate]; }
-    uint32_t lastPrice(uint16_t locate) const { return lastPrice_[locate]; } // last execution, 0 if none
-    char tradingState(uint16_t locate) const { return tradingState_[locate]; }
-    uint32_t crossedCount(uint16_t locate) const { return crossedByLocate_[locate]; } // during market hours
-    const std::vector<CrossedEvent>& crossedWhileTrading() const { return crossedWhileTrading_; } // first 100
-    Listener& listener() { return listener_; }
+    [[nodiscard]] const L3OrderBook& book(uint16_t locate) const { return books_[locate]; }
+    [[nodiscard]] const std::string& symbol(uint16_t locate) const { return symbols_[locate]; }
+    [[nodiscard]] uint32_t lastPrice(uint16_t locate) const { return lastPrice_[locate]; } // last execution, 0 if none
+    [[nodiscard]] char tradingState(uint16_t locate) const { return tradingState_[locate]; }
+    [[nodiscard]] uint32_t crossedCount(uint16_t locate) const { return crossedByLocate_[locate]; } // during market hours
+    [[nodiscard]] const std::vector<CrossedEvent>& crossedWhileTrading() const { return crossedWhileTrading_; } // first 100
+    [[nodiscard]] Listener& listener() { return listener_; }
 
     // Locate code for a symbol from the stock directory, or -1 if not seen.
-    int locateOf(std::string_view symbol) const {
+    [[nodiscard]] int locateOf(std::string_view symbol) const {
         for (size_t i = 0; i < kMaxLocates; ++i) {
             if (symbols_[i] == symbol) return static_cast<int>(i);
         }
         return -1;
     }
 
-    const Stats& stats() const { return stats_; }
+    [[nodiscard]] const Stats& stats() const { return stats_; }
 
 private:
     // Applies `change` to the book for `locate`, then tells the listener if the best bid or ask
@@ -229,7 +230,13 @@ private:
         o->shares = shares;
         o->locate = locate;
         o->side = side;
-        index_.insert(ref, o);
+        // A live reference number can't be taken again: overwriting its index entry would
+        // strand the existing order in the book. Keep the book as it is and count it.
+        if (!index_.tryInsert(ref, o)) {
+            pool_.release(o);
+            ++stats_.duplicateRefs;
+            return;
+        }
         recordDepth(books_[locate].add(o));
         if (++stats_.liveOrders > stats_.peakLiveOrders) stats_.peakLiveOrders = stats_.liveOrders;
         if (marketOpen_ && books_[locate].crossed()) {

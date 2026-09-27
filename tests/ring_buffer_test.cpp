@@ -1,8 +1,7 @@
 #include <gtest/gtest.h>
 
+#include <cstddef>
 #include <cstdint>
-#include <memory>
-#include <thread>
 
 #include "RingBuffer.hpp"
 #include "SpscStress.hpp"

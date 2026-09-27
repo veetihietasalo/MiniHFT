@@ -1,0 +1,2 @@
+# Fuzzer inputs are raw bytes: never convert their line endings.
+tests/fuzz/corpus/** binary

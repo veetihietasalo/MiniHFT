@@ -102,11 +102,10 @@ public:
 
     void publish() {
         ++p_.writeIdx;
-        if constexpr (Batch == 1) {
-            p_.head.store(p_.writeIdx, std::memory_order_release); // edge 1
-        } else if (p_.writeIdx - p_.head.load(std::memory_order_relaxed) >= Batch) {
-            p_.head.store(p_.writeIdx, std::memory_order_release);
+        if constexpr (Batch > 1) {
+            if (p_.writeIdx - p_.head.load(std::memory_order_relaxed) < Batch) return; // batch not full yet
         }
+        p_.head.store(p_.writeIdx, std::memory_order_release); // edge 1
     }
 
     // Publish anything still held back by batching.

@@ -1,7 +1,7 @@
+#include <cstdint>
 #include <iostream>
 #include <thread>
-#include <vector>
-#include <chrono>
+
 #include "RingBuffer.hpp"
 #include "ThreadUtils.hpp"
 
@@ -10,6 +10,8 @@
 #else
 #include <x86intrin.h>  // __rdtsc
 #endif
+
+namespace {
 
 // A simple message to pass around
 struct Message {
@@ -23,7 +25,7 @@ RingBuffer<Message, 1024> ringBuffer;
 
 void producer() {
     // Pin to Core 1
-    ThreadUtils::pinThread(1);
+    if (!ThreadUtils::pinThread(1)) std::cerr << "producer not pinned: the latency below is less meaningful\n";
 
     for (int i = 0; i < MSG_COUNT; ++i) {
         Message* msg = nullptr;
@@ -32,7 +34,7 @@ void producer() {
             // _mm_pause(); // CPU hint to relax the loop (SSE2 intrinsic)
         }
 
-        msg->id = i;
+        msg->id = static_cast<uint64_t>(i);
         msg->timestamp = __rdtsc(); // Read Time-Stamp Counter (CPU cycles)
         ringBuffer.publish();
     }
@@ -40,7 +42,7 @@ void producer() {
 
 void consumer() {
     // Pin to Core 2
-    ThreadUtils::pinThread(2);
+    if (!ThreadUtils::pinThread(2)) std::cerr << "consumer not pinned: the latency below is less meaningful\n";
 
     uint64_t totalLatency = 0;
 
@@ -57,6 +59,8 @@ void consumer() {
 
     std::cout << "Average Latency: " << (totalLatency / MSG_COUNT) << " cycles\n";
 }
+
+} // namespace
 
 int main() {
     std::cout << "Starting RingBuffer Benchmark...\n";

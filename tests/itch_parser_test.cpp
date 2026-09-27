@@ -2,6 +2,8 @@
 
 #include <cstdint>
 #include <cstdio>
+#include <memory>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -21,11 +23,21 @@ void append(std::vector<uint8_t>& out, Encode encode) {
     out.insert(out.end(), message, message + n);
 }
 
-// Writes bytes to an anonymous temporary file, rewound for reading.
-std::FILE* toFile(const std::vector<uint8_t>& bytes) {
-    std::FILE* f = std::tmpfile();
-    std::fwrite(bytes.data(), 1, bytes.size(), f);
-    std::rewind(f);
+struct FileCloser {
+    void operator()(std::FILE* f) const { std::fclose(f); }
+};
+using File = std::unique_ptr<std::FILE, FileCloser>; // closed even when an ASSERT returns early
+
+// Writes bytes to an anonymous temporary file, positioned at the start for reading. Returns
+// null, and fails the test, if the file can't be created or written.
+File toFile(const std::vector<uint8_t>& bytes) {
+    File f(std::tmpfile());
+    const bool written = f && std::fwrite(bytes.data(), 1, bytes.size(), f.get()) == bytes.size() &&
+                         std::fseek(f.get(), 0, SEEK_SET) == 0;
+    if (!written) {
+        ADD_FAILURE() << "could not write the test input to a temporary file";
+        return nullptr;
+    }
     return f;
 }
 
@@ -92,16 +104,15 @@ TEST(Itch, EveryOrderMessageRoundTripsThroughReaderAndDispatch) {
     append(bytes, [&](uint8_t* p) { return itch::encodeOrderDelete(p, 7, ts, 1002); });
     append(bytes, [&](uint8_t* p) { return itch::encodeTrade(p, 7, ts, 0, 'S', 10, "AAPL    ", 2915250, 557); });
 
-    std::FILE* f = toFile(bytes);
-    ItchReader reader(f, 16); // tiny buffer: forces refills in the middle of messages
+    const File f = toFile(bytes);
+    ASSERT_NE(f, nullptr);
+    ItchReader reader(f.get(), 16); // tiny buffer: forces refills in the middle of messages
     Recorder r;
-    size_t length = 0;
-    while (const uint8_t* m = reader.next(length)) {
-        EXPECT_EQ(length, itch::messageLength(char(m[0])));
-        EXPECT_EQ(itch::decodeHeader(m).timestamp, ts);
-        itch::dispatch(m, r);
+    for (std::span<const uint8_t> m = reader.next(); !m.empty(); m = reader.next()) {
+        EXPECT_EQ(m.size(), itch::messageLength(char(m[0])));
+        EXPECT_EQ(itch::decodeHeader(m.data()).timestamp, ts);
+        EXPECT_TRUE(itch::dispatch(m, r));
     }
-    std::fclose(f);
 
     EXPECT_EQ(reader.messages(), 10u);
     EXPECT_EQ(reader.lengthMismatches(), 0u);
@@ -120,19 +131,73 @@ TEST(Itch, EveryOrderMessageRoundTripsThroughReaderAndDispatch) {
               "P 0 S 10 AAPL     2915250 557\n");
 }
 
+TEST(Itch, ReaderFlagsInputEndingInsideALengthPrefix) {
+    std::vector<uint8_t> bytes;
+    append(bytes, [](uint8_t* p) { return itch::encodeOrderDelete(p, 1, 0, 5); });
+    bytes.push_back(0x00); // one stray byte: half of a length prefix
+
+    const File f = toFile(bytes);
+    ASSERT_NE(f, nullptr);
+    ItchReader reader(f.get());
+    while (!reader.next().empty()) {}
+
+    EXPECT_EQ(reader.messages(), 1u);
+    EXPECT_TRUE(reader.truncated());
+}
+
 TEST(Itch, ReaderFlagsWrongLengthsAndTruncatedInput) {
     std::vector<uint8_t> bytes;
     append(bytes, [](uint8_t* p) { return itch::encodeOrderDelete(p, 1, 0, 5) + 2; }); // 'D' framed as 21 bytes, not 19
     append(bytes, [](uint8_t* p) { return itch::encodeOrderDelete(p, 1, 0, 6); });
     bytes.resize(bytes.size() - 3); // cut the last message short
 
-    std::FILE* f = toFile(bytes);
-    ItchReader reader(f);
-    size_t length = 0;
-    while (reader.next(length)) {}
-    std::fclose(f);
+    const File f = toFile(bytes);
+    ASSERT_NE(f, nullptr);
+    ItchReader reader(f.get());
+    while (!reader.next().empty()) {}
 
     EXPECT_EQ(reader.messages(), 1u);
     EXPECT_EQ(reader.lengthMismatches(), 1u);
     EXPECT_TRUE(reader.truncated());
+}
+
+// Decoders read fixed offsets, so a message shorter than its type requires must never reach
+// one. The reader skips bad frames and carries on with the next one: the length prefix still
+// says where it starts.
+TEST(Itch, ReaderSkipsMalformedMessagesAndKeepsGoing) {
+    std::vector<uint8_t> bytes;
+    append(bytes, [](uint8_t* p) { return itch::encodeOrderDelete(p, 1, 0, 5); });   // good
+    append(bytes, [](uint8_t* p) { p[0] = 'A'; return size_t{5}; });                  // add order, 5 bytes instead of 36
+    append(bytes, [](uint8_t*) { return size_t{0}; });                                // empty message
+    append(bytes, [](uint8_t* p) { p[0] = 'Z'; return size_t{12}; });                 // unknown type
+    append(bytes, [](uint8_t* p) { return itch::encodeOrderDelete(p, 1, 0, 6); });   // good
+
+    const File f = toFile(bytes);
+    ASSERT_NE(f, nullptr);
+    ItchReader reader(f.get(), 16);
+    std::vector<uint64_t> deleted;
+    for (std::span<const uint8_t> m = reader.next(); !m.empty(); m = reader.next()) {
+        ASSERT_EQ(m.size(), itch::messageLength(char(m[0])));
+        deleted.push_back(itch::decodeOrderDelete(m.data()).ref);
+    }
+
+    EXPECT_EQ(deleted, (std::vector<uint64_t>{5, 6}));
+    EXPECT_EQ(reader.messages(), 5u);
+    EXPECT_EQ(reader.lengthMismatches(), 2u); // the short add and the empty message
+    EXPECT_EQ(reader.unknownTypes(), 1u);
+    EXPECT_FALSE(reader.truncated());
+}
+
+TEST(Itch, DispatchRefusesMessagesOfTheWrongLength) {
+    Recorder r;
+    uint8_t message[64] = {};
+    const size_t n = itch::encodeAddOrder(message, 7, 0, 1001, 'B', 300, "AAPL    ", 2915200);
+
+    EXPECT_FALSE(itch::dispatch(std::span<const uint8_t>(message, n - 1), r)); // one byte short
+    EXPECT_FALSE(itch::dispatch(std::span<const uint8_t>(message, n + 1), r)); // one byte long
+    EXPECT_FALSE(itch::dispatch(std::span<const uint8_t>(), r));               // empty
+    EXPECT_EQ(r.log, "");                                                      // the handler never saw them
+
+    EXPECT_TRUE(itch::dispatch(std::span<const uint8_t>(message, n), r));
+    EXPECT_EQ(r.log, "A 7 0 1001 B 300 AAPL     2915200\n");
 }

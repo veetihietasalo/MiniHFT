@@ -6,6 +6,10 @@
 #include <cstdint>
 #include <limits>
 
+#if !(defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86))
+#error "Tsc.hpp reads the x86 time-stamp counter; other CPUs need a different clock source"
+#endif
+
 #if defined(_MSC_VER)
 #include <intrin.h>
 #else
@@ -19,13 +23,13 @@ namespace Tsc {
 
     // Plain RDTSC: cheapest, but the CPU may execute it before earlier instructions finish.
     // Use it to stamp the start of an interval.
-    inline uint64_t read() noexcept {
+    [[nodiscard]] inline uint64_t read() noexcept {
         return __rdtsc();
     }
 
     // RDTSCP waits until every earlier instruction, loads included, has executed.
     // Use it to stamp the end of an interval, so the work being timed is really done.
-    inline uint64_t readOrdered() noexcept {
+    [[nodiscard]] inline uint64_t readOrdered() noexcept {
         unsigned int aux;
         return __rdtscp(&aux);
     }
@@ -37,7 +41,7 @@ namespace Tsc {
 
     // TSC ticks per nanosecond, measured against steady_clock (median of 3 windows).
     // Busy-waits for about 3 * windowMs.
-    inline double calibrateTicksPerNs(int windowMs = 50) {
+    [[nodiscard]] inline double calibrateTicksPerNs(int windowMs = 50) {
         std::array<double, 3> samples{};
         for (double& s : samples) {
             const auto t0 = std::chrono::steady_clock::now();
@@ -53,7 +57,7 @@ namespace Tsc {
 
     // Smallest gap between a read() and the readOrdered() right after it: the floor
     // under every interval measured with that pair.
-    inline uint64_t measureOverheadTicks(int iterations = 100'000) {
+    [[nodiscard]] inline uint64_t measureOverheadTicks(int iterations = 100'000) {
         uint64_t best = std::numeric_limits<uint64_t>::max();
         for (int i = 0; i < iterations; ++i) {
             const uint64_t a = read();

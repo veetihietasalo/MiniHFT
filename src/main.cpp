@@ -1,14 +1,12 @@
-#include <iostream>
-#include <thread>
-#include <iostream>
-#include <thread>
 #include <chrono>
-#include <iomanip> // Added for strategy simulation
-#include "Matrix.hpp"
-#include "Statistics.hpp"
-#include "OrderBook.hpp"
+#include <iostream>
+#include <random>
+#include <thread>
+
 #include "MarketSimulator.hpp"
-#include "Strategy.hpp" // Added for strategy simulation
+#include "Order.hpp"
+#include "OrderBook.hpp"
+#include "Strategy.hpp"
 
 int main() {
     std::cout << "MiniHFT Engine Starting (Strategy Mode)...\n";
@@ -20,6 +18,8 @@ int main() {
     MarketMakerStrategy strategy(0.1, 0.5);
 
     double currentMidPrice = 100.0;
+    std::mt19937 rng(42); // fixed seed: every run drifts the same way
+    std::uniform_int_distribution<int> driftCents(-50, 49);
 
     for (int i = 0; i < 50; ++i) {
         // 1. Strategy places quotes based on current mid price and inventory
@@ -27,8 +27,8 @@ int main() {
 
         // Place MM Orders (cancel previous would be ideal, but for now just add new)
         // In a real system, we'd update existing orders to avoid message traffic
-        book.addOrder(Order(1000 + i, Side::Buy, bidPrice, 10));
-        book.addOrder(Order(2000 + i, Side::Sell, askPrice, 10));
+        book.addOrder(Order(static_cast<OrderId>(1000 + i), Side::Buy, bidPrice, 10));
+        book.addOrder(Order(static_cast<OrderId>(2000 + i), Side::Sell, askPrice, 10));
 
         std::cout << "MM Quotes: " << bidPrice << " @ " << askPrice
                   << " [Inv: " << strategy.getInventory() << "]\n";
@@ -65,7 +65,7 @@ int main() {
         // In reality, mid price comes from the book, but here we simulate the "fair value" moving
         currentMidPrice = marketOrder.price; // This is wrong, market order price is aggressive
         // Let's just drift the mid price randomly
-        currentMidPrice += (rand() % 100 - 50) / 100.0;
+        currentMidPrice += driftCents(rng) / 100.0;
         if (currentMidPrice < 0) currentMidPrice = 100.0;
 
         std::this_thread::sleep_for(std::chrono::milliseconds(50));

@@ -1,8 +1,6 @@
 #pragma once
 
-#include <thread>
 #include <iostream>
-#include <vector>
 
 #if defined(_WIN32)
     #ifndef NOMINMAX
@@ -12,7 +10,7 @@
 #else
     #include <pthread.h>
     #include <sched.h>
-    #include <cstring>
+    #include <system_error>
 #endif
 
 namespace ThreadUtils {
@@ -20,9 +18,17 @@ namespace ThreadUtils {
 #if defined(_WIN32)
 
     // Pin current thread to a specific core ID (0, 1, 2...)
-    inline bool pinThread(int coreId) {
+    [[nodiscard]] inline bool pinThread(int coreId) {
+        // An affinity mask has one bit per processor in the thread's processor group, 64 at
+        // most. Shifting by 64 or more, or by a negative amount, is undefined behaviour (in
+        // practice x86 masks the shift and `1 << 64` pins to core 0), so check the range first.
+        constexpr int kMaskBits = static_cast<int>(sizeof(DWORD_PTR) * 8);
+        if (coreId < 0 || coreId >= kMaskBits) {
+            std::cerr << "Failed to pin thread to core " << coreId << ". Error: core id out of range\n";
+            return false;
+        }
         HANDLE threadHandle = GetCurrentThread();
-        DWORD_PTR mask = (1ULL << coreId);
+        DWORD_PTR mask = DWORD_PTR{1} << coreId;
 
         DWORD_PTR result = SetThreadAffinityMask(threadHandle, mask);
         if (result == 0) {
@@ -39,14 +45,14 @@ namespace ThreadUtils {
     }
 
     // Logical CPU the calling thread is running on right now
-    inline int currentCore() {
+    [[nodiscard]] inline int currentCore() {
         return static_cast<int>(GetCurrentProcessorNumber());
     }
 
 #else
 
     // Pin current thread to a specific core ID (0, 1, 2...)
-    inline bool pinThread(int coreId) {
+    [[nodiscard]] inline bool pinThread(int coreId) {
         // CPU_SET outside [0, CPU_SETSIZE) writes past the bitmap, so reject those ids up front.
         // Ids inside that range but not present on this machine are rejected by the kernel (EINVAL).
         if (coreId < 0 || coreId >= CPU_SETSIZE) {
@@ -56,12 +62,14 @@ namespace ThreadUtils {
 
         cpu_set_t set;
         CPU_ZERO(&set);
-        CPU_SET(coreId, &set);
+        CPU_SET(static_cast<size_t>(coreId), &set);
 
-        // Returns the error number directly; it does not set errno.
+        // Returns the error number directly; it does not set errno. The message comes from
+        // generic_category(), not strerror(): the producer and consumer threads both pin
+        // themselves at startup, and strerror() may return a buffer another call overwrites.
         int rc = pthread_setaffinity_np(pthread_self(), sizeof(cpu_set_t), &set);
         if (rc != 0) {
-            std::cerr << "Failed to pin thread to core " << coreId << ". Error: " << std::strerror(rc) << "\n";
+            std::cerr << "Failed to pin thread to core " << coreId << ". Error: " << std::generic_category().message(rc) << "\n";
             return false;
         }
         return true;
@@ -75,12 +83,12 @@ namespace ThreadUtils {
         param.sched_priority = sched_get_priority_max(SCHED_FIFO);
         int rc = pthread_setschedparam(pthread_self(), SCHED_FIFO, &param);
         if (rc != 0) {
-            std::cerr << "SCHED_FIFO unavailable: " << std::strerror(rc) << "\n";
+            std::cerr << "SCHED_FIFO unavailable: " << std::generic_category().message(rc) << "\n";
         }
     }
 
     // Logical CPU the calling thread is running on right now
-    inline int currentCore() {
+    [[nodiscard]] inline int currentCore() {
         return sched_getcpu();
     }
 

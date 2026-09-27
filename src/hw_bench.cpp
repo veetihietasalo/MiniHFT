@@ -1,9 +1,10 @@
-#include <iostream>
 #include <chrono>
-#include <thread>
-#include <vector>
+#include <cstdint>
+#include <iostream>
+
 #include "FpgaPipeline.hpp"
-#include "KernelBypass.hpp"
+
+namespace {
 
 // Software approach: Function call
 uint32_t softwareProcess(uint32_t data) {
@@ -17,13 +18,15 @@ uint32_t softwareProcess(uint32_t data) {
 void benchmarkSoftware() {
     auto start = std::chrono::high_resolution_clock::now();
     uint32_t sum = 0;
-    for (int i = 0; i < 1000000; ++i) {
+    for (uint32_t i = 0; i < 1000000; ++i) {
         sum += softwareProcess(i);
     }
     auto end = std::chrono::high_resolution_clock::now();
+    // Printing the sum makes the loop's result observable; otherwise the optimizer may delete
+    // the very work being timed.
     std::cout << "Software Time: "
               << std::chrono::duration_cast<std::chrono::microseconds>(end - start).count()
-              << " us\n";
+              << " us (checksum " << sum << ")\n";
 }
 
 void benchmarkFpga() {
@@ -31,7 +34,7 @@ void benchmarkFpga() {
     auto start = std::chrono::high_resolution_clock::now();
 
     // Simulate streaming data
-    for (int i = 0; i < 1000000; ++i) {
+    for (uint32_t i = 0; i < 1000000; ++i) {
         fpga.input(i);
         fpga.tick(); // Clock cycle 1
         fpga.tick(); // Clock cycle 2
@@ -46,6 +49,8 @@ void benchmarkFpga() {
               << std::chrono::duration_cast<std::chrono::microseconds>(end - start).count()
               << " us (Simulated Cycles: " << fpga.getCycles() << ")\n";
 }
+
+} // namespace
 
 int main() {
     std::cout << "--- Hardware Simulation Benchmark ---\n";

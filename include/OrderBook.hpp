@@ -48,7 +48,7 @@ public:
                     tradeQty,
                     bestBid.id,
                     bestAsk.id,
-                    (uint64_t)std::chrono::high_resolution_clock::now().time_since_epoch().count()
+                    static_cast<uint64_t>(std::chrono::high_resolution_clock::now().time_since_epoch().count())
                 });
 
                 bestBid.quantity -= tradeQty;
