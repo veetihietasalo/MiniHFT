@@ -11,6 +11,9 @@
 // numbers belong to that depth. Old-book orders are built before timing starts; match()'s own
 // allocation and clock read count, as they did in W01.
 //
+// The L3 book also runs with a top-of-book listener (W05): once as a template parameter
+// (new+tmpl) and once behind a virtual interface (new+virt), to price that extension point.
+//
 // Usage: orderbook_latency [--depths=10,100,1000] [--events=1000000] [--core=2] [--seed=42]
 
 #include <algorithm>
@@ -22,6 +25,7 @@
 
 #include "BenchCommon.hpp"
 #include "ItchBook.hpp"
+#include "Listeners.hpp"
 #include "LatencyHistogram.hpp"
 #include "OrderBook.hpp"
 #include "ThreadUtils.hpp"
@@ -94,9 +98,11 @@ std::unique_ptr<DepthResult> runOld(long long depth, const std::vector<Round>& r
     return result;
 }
 
-std::unique_ptr<DepthResult> runNew(long long depth, const std::vector<Round>& rounds, uint64_t warmupRounds) {
+template <typename Builder, typename Listener = NoListener>
+std::unique_ptr<DepthResult> runNew(long long depth, const std::vector<Round>& rounds, uint64_t warmupRounds,
+                                    Listener listener = Listener{}) {
     constexpr uint16_t kLocate = 1;
-    auto builder = std::make_unique<ItchBookBuilder>(static_cast<size_t>(depth) * 4 + 1024);
+    auto builder = std::make_unique<Builder>(static_cast<size_t>(depth) * 4 + 1024, listener);
     uint64_t nextRef = 1;
     auto add = [&](char side, uint32_t price) { builder->onAdd(kLocate, 0, itch::AddOrder{nextRef++, side, kQty, {}, price}); };
 
@@ -129,6 +135,36 @@ std::unique_ptr<DepthResult> runNew(long long depth, const std::vector<Round>& r
     return result;
 }
 
+// Mean cost per event with no timer inside the loop: the whole run is timed once. Per-event
+// timing carries ~10 ns of timer overhead and ~1.6% histogram buckets, too coarse to see a
+// 1-2 ns difference; the mean over a million events isn't. Median of 5 runs.
+template <typename Builder, typename Listener = NoListener>
+double meanNsPerEvent(long long depth, const std::vector<Round>& rounds, double ticksPerNs, Listener listener = Listener{}) {
+    constexpr uint16_t kLocate = 1;
+    std::vector<double> runs;
+    for (int rep = 0; rep < 5; ++rep) {
+        auto builder = std::make_unique<Builder>(static_cast<size_t>(depth) * 4 + 1024, listener);
+        uint64_t nextRef = 1;
+        auto add = [&](char side, uint32_t price) { builder->onAdd(kLocate, 0, itch::AddOrder{nextRef++, side, kQty, {}, price}); };
+        for (long long i = 0; i < depth; ++i) {
+            add('B', kBestBidItch - kTickItch * static_cast<uint32_t>(i));
+            add('S', kBestAskItch + kTickItch * static_cast<uint32_t>(i));
+        }
+        const uint64_t t0 = Tsc::read();
+        for (const Round& r : rounds) {
+            const L3OrderBook& book = builder->book(kLocate);
+            const uint64_t ref = (r.buyerTakes ? book.bestAsk() : book.bestBid())->head->ref;
+            builder->onExecuted(kLocate, 0, itch::OrderExecuted{ref, kQty, 0});
+            if (r.buyerTakes) add('S', kBestAskItch + kTickItch * static_cast<uint32_t>(r.level));
+            else add('B', kBestBidItch - kTickItch * static_cast<uint32_t>(r.level));
+        }
+        const uint64_t t1 = Tsc::readOrdered();
+        runs.push_back(static_cast<double>(t1 - t0) / ticksPerNs / (2.0 * static_cast<double>(rounds.size())));
+    }
+    std::sort(runs.begin(), runs.end());
+    return runs[runs.size() / 2];
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -159,19 +195,33 @@ int main(int argc, char** argv) {
         const uint64_t warmupRounds = std::min<uint64_t>(roundCount / 10, 50'000);
         const std::vector<Round> rounds = buildRounds(depth, warmupRounds + roundCount, seed);
         const auto oldBook = runOld(depth, rounds, warmupRounds);
-        const auto newBook = runNew(depth, rounds, warmupRounds);
+        const auto newBook = runNew<ItchBookBuilder>(depth, rounds, warmupRounds);
+        const auto withTemplate = runNew<BasicItchBookBuilder<QuoteCounter>>(depth, rounds, warmupRounds, QuoteCounter{});
+        CountingHandler counting;
+        IgnoringHandler ignoring;
+        TopOfBookHandler* handler = g_useIgnoringHandler ? static_cast<TopOfBookHandler*>(&ignoring) : &counting;
+        const auto withVirtual =
+            runNew<BasicItchBookBuilder<VirtualListener>>(depth, rounds, warmupRounds, VirtualListener{handler});
 
         char label[64];
-        std::snprintf(label, sizeof label, "old  depth %lld  take", depth);
-        bench::printTableRow(label, oldBook->take, ticksPerNs);
-        std::snprintf(label, sizeof label, "new  depth %lld  take", depth);
-        bench::printTableRow(label, newBook->take, ticksPerNs);
-        std::snprintf(label, sizeof label, "old  depth %lld  make", depth);
-        bench::printTableRow(label, oldBook->make, ticksPerNs);
-        std::snprintf(label, sizeof label, "new  depth %lld  make", depth);
-        bench::printTableRow(label, newBook->make, ticksPerNs);
+        const struct { const char* name; const DepthResult* result; } rows[] = {
+            {"old", oldBook.get()}, {"new", newBook.get()},
+            {"new+tmpl", withTemplate.get()}, {"new+virt", withVirtual.get()}};
+        for (const char* kind : {"take", "make"}) {
+            for (const auto& row : rows) {
+                std::snprintf(label, sizeof label, "%-8s depth %lld  %s", row.name, depth, kind);
+                bench::printTableRow(label, kind[0] == 't' ? row.result->take : row.result->make, ticksPerNs);
+            }
+        }
 
-        for (const auto* r : {oldBook.get(), newBook.get()}) {
+        const double meanNone = meanNsPerEvent<ItchBookBuilder>(depth, rounds, ticksPerNs);
+        const double meanTemplate = meanNsPerEvent<BasicItchBookBuilder<QuoteCounter>>(depth, rounds, ticksPerNs, QuoteCounter{});
+        const double meanVirtual =
+            meanNsPerEvent<BasicItchBookBuilder<VirtualListener>>(depth, rounds, ticksPerNs, VirtualListener{handler});
+        std::printf("  mean per event, no timer in the loop (median of 5): new %.2f ns | +tmpl %.2f ns | +virt %.2f ns\n",
+                    meanNone, meanTemplate, meanVirtual);
+
+        for (const auto* r : {oldBook.get(), newBook.get(), withTemplate.get(), withVirtual.get()}) {
             if (r->trades != r->take.count()) {
                 std::printf("WARNING: expected one trade per take, got %llu trades for %llu takes\n",
                             static_cast<unsigned long long>(r->trades), static_cast<unsigned long long>(r->take.count()));

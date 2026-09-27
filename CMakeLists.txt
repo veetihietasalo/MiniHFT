@@ -62,16 +62,23 @@ if(MINIHFT_BUILD_TESTS)
     FetchContent_MakeAvailable(googletest)
 
     enable_testing()
-    add_executable(minihft_tests
+    set(MINIHFT_TEST_SOURCES
         tests/itch_parser_test.cpp
         tests/l3_order_book_test.cpp
         tests/latency_histogram_test.cpp
+        tests/listener_test.cpp
         tests/object_pool_test.cpp
         tests/order_index_test.cpp
         tests/ring_buffer_test.cpp
         tests/ring_variants_test.cpp
         tests/thread_utils_test.cpp
         tests/tsc_test.cpp)
+    # The zero-allocation tests replace global operator new/delete for the test binary. Sanitizer
+    # runtimes define their own, so those tests are left out of sanitizer builds.
+    if(NOT MINIHFT_SANITIZER)
+        list(APPEND MINIHFT_TEST_SOURCES tests/allocation_counter.cpp tests/zero_alloc_test.cpp)
+    endif()
+    add_executable(minihft_tests ${MINIHFT_TEST_SOURCES})
     target_link_libraries(minihft_tests PRIVATE minihft_core GTest::gtest_main)
     include(GoogleTest)
     gtest_discover_tests(minihft_tests DISCOVERY_MODE PRE_TEST)
