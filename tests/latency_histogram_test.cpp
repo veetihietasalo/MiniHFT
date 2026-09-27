@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <memory>
@@ -78,6 +79,14 @@ TEST(LatencyHistogram, RareOutlierMovesTheMaxButNotTheMedian) {
     EXPECT_EQ(h->valueAtPercentile(100), 1'000'000u);
     EXPECT_EQ(h->max(), 1'000'000u);
     EXPECT_GT(h->mean(), 199.0); // one outlier doubles the mean: why averages hide tails
+}
+
+// Converting NaN to an integer is undefined behaviour; a NaN percentile is treated like 0.
+TEST(LatencyHistogram, NanPercentileReturnsTheMinimum) {
+    auto h = std::make_unique<H>();
+    h->record(5);
+    h->record(500);
+    EXPECT_EQ(h->valueAtPercentile(std::numeric_limits<double>::quiet_NaN()), 5u);
 }
 
 TEST(LatencyHistogram, ResetClearsEverything) {

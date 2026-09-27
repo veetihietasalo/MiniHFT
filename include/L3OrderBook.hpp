@@ -87,13 +87,13 @@ public:
         return depth;
     }
 
-    const PriceLevel* bestBid() const { return bids_.empty() ? nullptr : &bids_.back(); }
-    const PriceLevel* bestAsk() const { return asks_.empty() ? nullptr : &asks_.back(); }
+    [[nodiscard]] const PriceLevel* bestBid() const { return bids_.empty() ? nullptr : &bids_.back(); }
+    [[nodiscard]] const PriceLevel* bestAsk() const { return asks_.empty() ? nullptr : &asks_.back(); }
 
-    bool crossed() const { return !bids_.empty() && !asks_.empty() && bids_.back().price >= asks_.back().price; }
+    [[nodiscard]] bool crossed() const { return !bids_.empty() && !asks_.empty() && bids_.back().price >= asks_.back().price; }
 
     // All levels of one side, best price last.
-    const std::vector<PriceLevel>& levels(BookSide side) const { return side == BookSide::Bid ? bids_ : asks_; }
+    [[nodiscard]] const std::vector<PriceLevel>& levels(BookSide side) const { return side == BookSide::Bid ? bids_ : asks_; }
 
 private:
     std::vector<PriceLevel>& sideOf(BookSide side) { return side == BookSide::Bid ? bids_ : asks_; }

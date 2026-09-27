@@ -1,10 +1,7 @@
 #pragma once
 
 #include <cstddef>
-#include <vector>
 #include <atomic>
-#include <cassert>
-#include <new>
 
 // Cache line size is typically 64 bytes
 constexpr size_t CACHE_LINE_SIZE = 64;
@@ -48,7 +45,7 @@ public:
 
     // Producer: Write to buffer
     // Returns pointer to slot if successful, nullptr if full
-    T* claim() {
+    [[nodiscard]] T* claim() {
         // Relaxed: the producer is the only writer of head, so it always reads its own last value.
         const size_t h = producer_.head.load(std::memory_order_relaxed);
         if (h - producer_.cachedTail >= Size) {
@@ -72,7 +69,7 @@ public:
 
     // Consumer: Read from buffer
     // Returns pointer to slot if available, nullptr if empty
-    T* peek() {
+    [[nodiscard]] T* peek() {
         // Relaxed: the consumer is the only writer of tail.
         const size_t t = consumer_.tail.load(std::memory_order_relaxed);
         if (t == consumer_.cachedHead) {

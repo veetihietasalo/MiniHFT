@@ -22,11 +22,15 @@ namespace bench {
 
     inline std::string cpuBrand() {
         unsigned int regs[12] = {};
+        // CPUID leaves 0x80000002..4 return the brand string, 16 bytes each.
+        for (unsigned int leaf = 0; leaf < 3; ++leaf) {
+            unsigned int* r = regs + size_t{4} * leaf;
 #if defined(_MSC_VER)
-        for (int i = 0; i < 3; ++i) __cpuid(reinterpret_cast<int*>(regs + 4 * i), static_cast<int>(0x80000002u + i));
+            __cpuid(reinterpret_cast<int*>(r), static_cast<int>(0x80000002u + leaf));
 #else
-        for (unsigned int i = 0; i < 3; ++i) __get_cpuid(0x80000002u + i, &regs[4 * i], &regs[4 * i + 1], &regs[4 * i + 2], &regs[4 * i + 3]);
+            __get_cpuid(0x80000002u + leaf, &r[0], &r[1], &r[2], &r[3]);
 #endif
+        }
         char text[49] = {};
         std::memcpy(text, regs, 48);
         std::string brand(text);

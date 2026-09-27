@@ -1,0 +1,38 @@
+# Bug-finding checks, run by CI on every push (docs/code_quality.md).
+#
+# Turned off, and why:
+#   bugprone-easily-swappable-parameters  The ITCH encoders and handlers take the wire format's
+#       fields in wire order, several integers in a row. The fix is a strong type per field;
+#       until then the full-day replay (0 unknown references) is what catches a swapped pair.
+#   misc-const-correctness  Asks for const on every local that isn't modified: style, not bugs.
+#       Its pointer analysis also reports false positives here (the `char* end` that strtoll
+#       writes through), and what it reports changes between clang-tidy versions.
+Checks: >
+  -*,
+  bugprone-*,
+  -bugprone-easily-swappable-parameters,
+  concurrency-*,
+  cppcoreguidelines-slicing,
+  cppcoreguidelines-virtual-class-destructor,
+  misc-*,
+  -misc-const-correctness,
+  modernize-make-unique,
+  modernize-use-emplace,
+  modernize-use-nullptr,
+  modernize-use-override,
+  modernize-use-using,
+  performance-*,
+  readability-container-size-empty,
+  readability-duplicate-include,
+  readability-inconsistent-declaration-parameter-name,
+  readability-misleading-indentation,
+  readability-non-const-parameter,
+  readability-redundant-string-init
+WarningsAsErrors: '*'
+# Our own headers, wherever the repository is checked out. GoogleTest and Google Benchmark are
+# included as system headers, so nothing in them is reported.
+HeaderFilterRegex: '/(include|bench|tests)/[^/]+\.hpp$'
+CheckOptions:
+  # Plain structs (decoded messages, stats, test listeners) are meant to be read and written
+  # directly. A class that mixes private and public data is still reported.
+  misc-non-private-member-variables-in-classes.IgnoreClassesWithAllMemberVariablesBeingPublic: true

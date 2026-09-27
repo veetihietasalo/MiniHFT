@@ -15,15 +15,17 @@
 template <typename Value>
 class OrderIndex {
 public:
-    static constexpr uint64_t kEmpty = ~uint64_t{0}; // reserved: not a valid key
+    static constexpr uint64_t kEmpty = ~uint64_t{0}; // marks unused slots, so it can never be a key
 
     explicit OrderIndex(size_t expectedEntries = 1024) { rehash(capacityFor(expectedEntries)); }
 
-    size_t size() const { return size_; }
-    size_t capacity() const { return slots_.size(); }
+    [[nodiscard]] size_t size() const { return size_; }
+    [[nodiscard]] size_t capacity() const { return slots_.size(); }
 
-    // Value for `key`, or nullptr if absent.
-    Value* find(uint64_t key) {
+    // Value for `key`, or nullptr if absent. The pointer is valid until the next tryInsert(),
+    // which may rehash the table.
+    [[nodiscard]] Value* find(uint64_t key) {
+        if (key == kEmpty) return nullptr;
         for (size_t i = home(key);; i = (i + 1) & mask_) {
             Slot& s = slots_[i];
             if (s.key == key) return &s.value;
@@ -31,25 +33,25 @@ public:
         }
     }
 
-    // Inserts or overwrites.
-    void insert(uint64_t key, const Value& value) {
+    // Adds key -> value. Returns false, changing nothing, if the key is already present or is
+    // kEmpty: an existing entry is never overwritten.
+    [[nodiscard]] bool tryInsert(uint64_t key, const Value& value) {
+        if (key == kEmpty) return false;
         if ((size_ + 1) * 2 > slots_.size()) rehash(slots_.size() * 2); // keep load factor <= 0.5
         for (size_t i = home(key);; i = (i + 1) & mask_) {
             Slot& s = slots_[i];
+            if (s.key == key) return false;
             if (s.key == kEmpty) {
                 s = Slot{key, value};
                 ++size_;
-                return;
-            }
-            if (s.key == key) {
-                s.value = value;
-                return;
+                return true;
             }
         }
     }
 
     // Removes `key`; returns false if it wasn't there.
     bool erase(uint64_t key) {
+        if (key == kEmpty) return false;
         size_t hole = home(key);
         while (slots_[hole].key != key) {
             if (slots_[hole].key == kEmpty) return false;
@@ -84,7 +86,7 @@ private:
     }
 
     // Fibonacci hashing: multiply, keep the top bits. Spreads sequential reference numbers evenly.
-    size_t home(uint64_t key) const { return static_cast<size_t>((key * 0x9E3779B97F4A7C15ULL) >> shift_); }
+    [[nodiscard]] size_t home(uint64_t key) const { return static_cast<size_t>((key * 0x9E3779B97F4A7C15ULL) >> shift_); }
 
     void rehash(size_t newCapacity) {
         std::vector<Slot> old;
@@ -95,8 +97,16 @@ private:
         for (size_t c = newCapacity; c > 1; c >>= 1) --shift_;
         size_ = 0;
         for (const Slot& s : old) {
-            if (s.key != kEmpty) insert(s.key, s.value);
+            if (s.key != kEmpty) placeUnique(s.key, s.value);
         }
+    }
+
+    // For rehash: the key is known to be absent and the table to have room.
+    void placeUnique(uint64_t key, const Value& value) {
+        size_t i = home(key);
+        while (slots_[i].key != kEmpty) i = (i + 1) & mask_;
+        slots_[i] = Slot{key, value};
+        ++size_;
     }
 
     std::vector<Slot> slots_;

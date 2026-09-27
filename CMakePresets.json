@@ -5,7 +5,10 @@
     {
       "name": "base",
       "hidden": true,
-      "binaryDir": "${sourceDir}/build/${presetName}"
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "cacheVariables": {
+        "MINIHFT_WARNINGS_AS_ERRORS": "ON"
+      }
     },
     {
       "name": "msvc-release",
@@ -19,6 +22,9 @@
       "hidden": true,
       "inherits": "base",
       "generator": "Ninja",
+      "cacheVariables": {
+        "CMAKE_EXPORT_COMPILE_COMMANDS": "ON"
+      },
       "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Linux" }
     },
     {
@@ -40,12 +46,48 @@
         "MINIHFT_SANITIZER": "thread",
         "MINIHFT_BUILD_BENCHMARKS": "OFF"
       }
+    },
+    {
+      "name": "clang-asan-ubsan",
+      "displayName": "Clang + AddressSanitizer + UndefinedBehaviorSanitizer",
+      "inherits": "linux-base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "CMAKE_CXX_COMPILER": "clang++",
+        "MINIHFT_SANITIZER": "address,undefined",
+        "MINIHFT_BUILD_BENCHMARKS": "OFF"
+      }
+    },
+    {
+      "name": "clang-fuzz",
+      "displayName": "Clang + libFuzzer (with ASan and UBSan)",
+      "inherits": "linux-base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "CMAKE_CXX_COMPILER": "clang++",
+        "MINIHFT_SANITIZER": "address,undefined",
+        "MINIHFT_BUILD_FUZZERS": "ON",
+        "MINIHFT_BUILD_TESTS": "OFF",
+        "MINIHFT_BUILD_BENCHMARKS": "OFF"
+      }
+    },
+    {
+      "name": "clang-tidy",
+      "displayName": "Compile database for clang-tidy (configure only)",
+      "description": "Every target, the fuzzer included, and no sanitizer, so clang-tidy sees every source file",
+      "inherits": "linux-base",
+      "cacheVariables": {
+        "CMAKE_CXX_COMPILER": "clang++",
+        "MINIHFT_BUILD_FUZZERS": "ON"
+      }
     }
   ],
   "buildPresets": [
     { "name": "msvc-release", "configurePreset": "msvc-release", "configuration": "Release" },
     { "name": "gcc-release", "configurePreset": "gcc-release" },
-    { "name": "clang-tsan", "configurePreset": "clang-tsan" }
+    { "name": "clang-tsan", "configurePreset": "clang-tsan" },
+    { "name": "clang-asan-ubsan", "configurePreset": "clang-asan-ubsan" },
+    { "name": "clang-fuzz", "configurePreset": "clang-fuzz", "targets": ["itch_fuzz", "gen_itch"] }
   ],
   "testPresets": [
     {
@@ -61,6 +103,15 @@
       "inherits": "test-base",
       "configurePreset": "clang-tsan",
       "environment": { "TSAN_OPTIONS": "halt_on_error=1 second_deadlock_stack=1" }
+    },
+    {
+      "name": "clang-asan-ubsan",
+      "inherits": "test-base",
+      "configurePreset": "clang-asan-ubsan",
+      "environment": {
+        "ASAN_OPTIONS": "detect_leaks=1:strict_string_checks=1",
+        "UBSAN_OPTIONS": "print_stacktrace=1"
+      }
     }
   ]
 }

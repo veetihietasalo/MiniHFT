@@ -5,6 +5,8 @@
 #include <vector>
 
 #include "ItchBook.hpp"
+#include "ItchMessages.hpp"
+#include "L3OrderBook.hpp"
 
 namespace {
 
@@ -26,6 +28,8 @@ std::vector<uint64_t> queueAt(const L3OrderBook& book, BookSide side, uint32_t p
 
 class L3Book : public ::testing::Test {
 protected:
+    // GoogleTest's fixture idiom: each TEST_F body is a subclass that uses `b` directly.
+    // NOLINTNEXTLINE(misc-non-private-member-variables-in-classes)
     std::unique_ptr<ItchBookBuilder> b = std::make_unique<ItchBookBuilder>(1024);
     const L3OrderBook& book() const { return b->book(kLoc); }
 };
@@ -116,6 +120,29 @@ TEST_F(L3Book, CrossingWhileHaltedIsCountedSeparately) {
     EXPECT_EQ(b->stats().crossedWhileTrading, 0u);
     EXPECT_EQ(b->tradingState(kLoc), 'P');
     EXPECT_EQ(b->crossedCount(kLoc), 1u);
+}
+
+// A reference number that's already live means the feed or the decoder is wrong. Taking it
+// anyway used to overwrite the index entry and strand the first order in the book for good.
+TEST_F(L3Book, DuplicateAddLeavesNoUnreachableOrder) {
+    b->onAdd(kLoc, 0, add(1, 'B', 100, 50'0000));
+    b->onAdd(kLoc, 0, add(1, 'B', 200, 49'0000)); // same reference number again
+    EXPECT_EQ(b->stats().duplicateRefs, 1u);
+    EXPECT_EQ(book().bestBid()->price, 50'0000u);   // the first order stands
+    b->onDelete(kLoc, 0, {1});
+    EXPECT_EQ(book().bestBid(), nullptr);
+    EXPECT_EQ(b->stats().liveOrders, 0u);
+}
+
+TEST_F(L3Book, ReplaceOntoALiveReferenceLeavesNoUnreachableOrder) {
+    b->onAdd(kLoc, 0, add(1, 'B', 100, 50'0000));
+    b->onAdd(kLoc, 0, add(2, 'B', 100, 49'0000));
+    b->onReplace(kLoc, 0, {1, 2, 100, 50'0100}); // new reference 2 is already live
+    EXPECT_EQ(b->stats().duplicateRefs, 1u);
+    EXPECT_EQ(book().bestBid()->price, 49'0000u);   // order 1 is gone, the original order 2 stands
+    b->onDelete(kLoc, 0, {2});
+    EXPECT_EQ(book().bestBid(), nullptr);
+    EXPECT_EQ(b->stats().liveOrders, 0u);
 }
 
 TEST_F(L3Book, InstrumentsAreIndependent) {

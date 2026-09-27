@@ -8,6 +8,7 @@
 //
 // Usage: relaxed_publish_demo [messages=1000000]
 
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 

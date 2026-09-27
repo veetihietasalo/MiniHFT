@@ -7,7 +7,7 @@ class MarketSimulator {
 private:
     std::mt19937 gen;
     std::normal_distribution<> priceDist;
-    std::uniform_int_distribution<> qtyDist;
+    std::uniform_int_distribution<Quantity> qtyDist;
     std::uniform_int_distribution<> sideDist;
     double currentPrice;
     OrderId nextId = 1;

@@ -4,7 +4,7 @@
 #include <string>
 #include <chrono>
 
-enum class Side {
+enum class Side : uint8_t {
     Buy,
     Sell
 };
@@ -22,7 +22,7 @@ struct Order {
 
     Order(OrderId i, Side s, Price p, Quantity q)
         : id(i), side(s), price(p), quantity(q) {
-        timestamp = std::chrono::high_resolution_clock::now().time_since_epoch().count();
+        timestamp = static_cast<uint64_t>(std::chrono::high_resolution_clock::now().time_since_epoch().count());
     }
 };
 

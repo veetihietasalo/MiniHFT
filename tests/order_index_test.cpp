@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <cstddef>
 #include <cstdint>
 #include <iterator>
 #include <random>
@@ -8,18 +9,35 @@
 
 #include "OrderIndex.hpp"
 
-TEST(OrderIndex, FindInsertOverwriteErase) {
+TEST(OrderIndex, FindInsertErase) {
     OrderIndex<int> index;
     EXPECT_EQ(index.find(42), nullptr);
-    index.insert(42, 1);
+    EXPECT_TRUE(index.tryInsert(42, 1));
     ASSERT_NE(index.find(42), nullptr);
     EXPECT_EQ(*index.find(42), 1);
-    index.insert(42, 2);
-    EXPECT_EQ(*index.find(42), 2);
     EXPECT_EQ(index.size(), 1u);
     EXPECT_TRUE(index.erase(42));
     EXPECT_FALSE(index.erase(42));
     EXPECT_EQ(index.find(42), nullptr);
+    EXPECT_EQ(index.size(), 0u);
+}
+
+// An existing entry is never overwritten: a second insert of a live key is refused.
+TEST(OrderIndex, DuplicateKeyIsRefusedAndKeepsTheFirstValue) {
+    OrderIndex<int> index;
+    EXPECT_TRUE(index.tryInsert(42, 1));
+    EXPECT_FALSE(index.tryInsert(42, 2));
+    EXPECT_EQ(*index.find(42), 1);
+    EXPECT_EQ(index.size(), 1u);
+}
+
+// kEmpty marks unused slots, so it can't be a key. It must be refused, not stored.
+TEST(OrderIndex, ReservedKeyIsRefusedAndNeverFound) {
+    OrderIndex<int> index;
+    EXPECT_FALSE(index.tryInsert(OrderIndex<int>::kEmpty, 1));
+    EXPECT_EQ(index.size(), 0u);
+    EXPECT_EQ(index.find(OrderIndex<int>::kEmpty), nullptr);
+    EXPECT_FALSE(index.erase(OrderIndex<int>::kEmpty));
     EXPECT_EQ(index.size(), 0u);
 }
 
@@ -35,7 +53,7 @@ TEST(OrderIndex, MatchesUnorderedMapUnderRandomChurn) {
         const auto op = rng() % 10;
         if (op < 5 || reference.empty()) { // insert a new ref (sequential, like ITCH)
             const uint64_t ref = nextRef++;
-            index.insert(ref, ref * 3);
+            ASSERT_TRUE(index.tryInsert(ref, ref * 3));
             reference[ref] = ref * 3;
         } else if (op < 9) { // erase something that exists
             auto it = reference.begin();

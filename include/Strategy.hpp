@@ -17,9 +17,9 @@ public:
 
     void onTrade(const Trade& trade, Side mySide) {
         if (mySide == Side::Buy) {
-            inventory += trade.quantity;
+            inventory += static_cast<int>(trade.quantity);
         } else {
-            inventory -= trade.quantity;
+            inventory -= static_cast<int>(trade.quantity);
         }
     }
 

@@ -3,12 +3,15 @@
 //
 // Usage: itch_test [file]
 
+#include <cstdint>
 #include <cstdio>
 #include <memory>
+#include <span>
 
 #include "ItchBook.hpp"
 #include "ItchMessages.hpp"
 #include "ItchParser.hpp"
+#include "L3OrderBook.hpp"
 
 int main(int argc, char** argv) {
     const char* path = argc > 1 ? argv[1] : "market_data.itch";
@@ -20,12 +23,11 @@ int main(int argc, char** argv) {
 
     ItchReader reader(file);
     auto builder = std::make_unique<ItchBookBuilder>(1024);
-    size_t length = 0;
-    while (const uint8_t* m = reader.next(length)) {
-        const itch::Header h = itch::decodeHeader(m);
+    for (std::span<const uint8_t> m = reader.next(); !m.empty(); m = reader.next()) {
+        const itch::Header h = itch::decodeHeader(m.data());
         std::printf("%c  locate %u  t=%llu ns  (%zu bytes)\n", h.type, h.locate,
-                    static_cast<unsigned long long>(h.timestamp), length);
-        itch::dispatch(m, *builder);
+                    static_cast<unsigned long long>(h.timestamp), m.size());
+        (void)itch::dispatch(m, *builder); // the reader only returns well-formed messages
     }
     std::fclose(file);
 
