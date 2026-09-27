@@ -1,61 +1,81 @@
 #pragma once
 
-#include <vector>
-#include <fstream>
-#include <iostream>
+// Streams ITCH 5.0 messages in the file format NASDAQ's sample files use: each message is
+// preceded by its length as a 2-byte big-endian integer. Reads from any FILE*, so a whole
+// trading day can be streamed without unpacking it to disk first:
+//
+//   gzip -dc 12302019.NASDAQ_ITCH50.gz | itch_replay -
+//
+// Messages are returned as pointers into an internal buffer (no copy). A pointer stays valid
+// until the next call to next().
+
+#include <cstddef>
+#include <cstdint>
+#include <cstdio>
 #include <cstring>
+#include <vector>
+
 #include "ItchMessages.hpp"
 
-class ItchParser {
-private:
-    std::vector<char> buffer;
-    size_t offset = 0;
-
+class ItchReader {
 public:
-    // Load entire file into memory (Memory Mapped File would be better for huge files)
-    bool loadFile(const std::string& filename) {
-        std::ifstream file(filename, std::ios::binary | std::ios::ate);
-        if (!file) return false;
+    explicit ItchReader(std::FILE* file, size_t bufferBytes = size_t{1} << 20)
+        : file_(file), buffer_(bufferBytes) {}
 
-        std::streamsize size = file.tellg();
-        file.seekg(0, std::ios::beg);
-
-        buffer.resize(size);
-        if (!file.read(buffer.data(), size)) return false;
-
-        offset = 0;
-        return true;
-    }
-
-    // Parse next message (Zero-Copy)
-    // Returns pointer to header, or nullptr if done
-    const ItchHeader* next() {
-        if (offset + sizeof(ItchHeader) > buffer.size()) return nullptr;
-
-        // Zero-Copy: Point directly to buffer
-        const ItchHeader* header = reinterpret_cast<const ItchHeader*>(&buffer[offset]);
-
-        // Determine message length based on type (Simplified for demo)
-        size_t msgLen = 0;
-        switch (header->messageType) {
-            case 'A': msgLen = sizeof(AddOrderMsg); break;
-            // Add other cases...
-            default:
-                // Unknown message, skip 1 byte to try to resync (naive)
-                // In reality, ITCH messages are framed or we know lengths of all types
-                offset++;
-                return next();
+    // The next message (without its length prefix), or nullptr at end of input.
+    // `length` receives the message's size in bytes.
+    const uint8_t* next(size_t& length) {
+        if (!ensure(2)) return nullptr;
+        const size_t len = itch::be16(buffer_.data() + begin_);
+        if (!ensure(2 + len)) {
+            truncated_ = (end_ - begin_) > 0;
+            return nullptr;
         }
+        const uint8_t* message = buffer_.data() + begin_ + 2;
+        begin_ += 2 + len;
+        ++messages_;
+        bytes_ += 2 + len;
 
-        if (offset + msgLen > buffer.size()) return nullptr;
+        const size_t expected = itch::messageLength(char(message[0]));
+        if (expected == 0) ++unknownTypes_;
+        else if (expected != len) ++lengthMismatches_;
 
-        offset += msgLen;
-        return header;
+        length = len;
+        return message;
     }
 
-    // Helper to cast generic header to specific message
-    static const AddOrderMsg* asAddOrder(const ItchHeader* header) {
-        if (header->messageType != 'A') return nullptr;
-        return reinterpret_cast<const AddOrderMsg*>(header);
+    uint64_t messages() const { return messages_; }
+    uint64_t bytes() const { return bytes_; }
+    uint64_t unknownTypes() const { return unknownTypes_; }         // types missing from itch::messageLength
+    uint64_t lengthMismatches() const { return lengthMismatches_; } // known type, unexpected length
+    bool truncated() const { return truncated_; }                   // input ended in the middle of a message
+
+private:
+    // Makes at least `need` bytes available from begin_, refilling from the file as needed.
+    bool ensure(size_t need) {
+        if (end_ - begin_ >= need) return true;
+        if (need > buffer_.size()) buffer_.resize(need);
+        if (begin_ > 0) {
+            std::memmove(buffer_.data(), buffer_.data() + begin_, end_ - begin_);
+            end_ -= begin_;
+            begin_ = 0;
+        }
+        while (end_ < need && !eof_) {
+            const size_t n = std::fread(buffer_.data() + end_, 1, buffer_.size() - end_, file_);
+            if (n == 0) eof_ = true;
+            end_ += n;
+        }
+        return end_ - begin_ >= need;
     }
+
+    std::FILE* file_;
+    std::vector<uint8_t> buffer_;
+    size_t begin_ = 0;
+    size_t end_ = 0;
+    bool eof_ = false;
+    bool truncated_ = false;
+    uint64_t messages_ = 0;
+    uint64_t bytes_ = 0;
+    uint64_t unknownTypes_ = 0;
+    uint64_t lengthMismatches_ = 0;
 };
