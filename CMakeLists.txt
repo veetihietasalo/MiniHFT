@@ -27,6 +27,8 @@ target_include_directories(minihft_core INTERFACE include)
 target_link_libraries(minihft_core INTERFACE Threads::Threads)
 if(MSVC)
     target_compile_options(minihft_core INTERFACE /W4)
+    # Standard fopen/tmpfile, not MSVC's non-portable *_s replacements.
+    target_compile_definitions(minihft_core INTERFACE _CRT_SECURE_NO_WARNINGS)
 else()
     target_compile_options(minihft_core INTERFACE -Wall -Wextra -Wpedantic)
 endif()
@@ -43,7 +45,7 @@ endforeach()
 set_target_properties(main PROPERTIES OUTPUT_NAME MiniHFT)
 
 # Latency harnesses: TSC timestamps into LatencyHistogram, reported as percentiles.
-foreach(harness IN ITEMS ring_latency ring_study orderbook_latency)
+foreach(harness IN ITEMS ring_latency ring_study orderbook_latency itch_replay)
     add_executable(${harness} bench/${harness}.cpp)
     target_link_libraries(${harness} PRIVATE minihft_core)
 endforeach()
@@ -61,7 +63,11 @@ if(MINIHFT_BUILD_TESTS)
 
     enable_testing()
     add_executable(minihft_tests
+        tests/itch_parser_test.cpp
+        tests/l3_order_book_test.cpp
         tests/latency_histogram_test.cpp
+        tests/object_pool_test.cpp
+        tests/order_index_test.cpp
         tests/ring_buffer_test.cpp
         tests/ring_variants_test.cpp
         tests/thread_utils_test.cpp

@@ -45,7 +45,8 @@ graph TB
 
 ### Market Microstructure
 - ✅ **Limit Order Book** - Price-time priority matching engine
-- ✅ **NASDAQ ITCH 5.0 Parser** - Binary protocol with endianness conversion
+- ✅ **L3 Order Book** - Price levels with a FIFO per level and O(1) lookup by order reference; a full NASDAQ trading day replayed through it ([design and results](docs/order_book.md))
+- ✅ **NASDAQ ITCH 5.0 Parser** - Streams NASDAQ's length-prefixed files (whole days, from a file or a `gzip -dc` pipe) and decodes every order message type
 - ✅ **Market Simulator** - Synthetic order flow generation
 
 ### Quantitative Models
@@ -76,22 +77,32 @@ Measured on an AMD Ryzen 9 9900X3D running with one CCD enabled and SMT off (6 c
 - With back-to-back sends (`--interval-ns=0`) the median is 23–34 µs. That's queueing: each message waits behind up to 1,023 others.
 - The table above was measured on the original queue. Since W03, `RingBuffer` uses release stores instead of `fetch_add` and caches the other side's index. Back-to-back throughput went from 39 to 6.4 ns per message (25 → 160 M msg/s), and the paced median is ~50 ns. See [RingBuffer v2](docs/ring_buffer_v2.md) for each change measured on its own.
 
-### Order book: `addOrder()` + `match()` per order
+### Order book: one update, original book vs L3 book
 
-`orderbook_latency`: the book holds a fixed number of resting orders per side (the depth). A *take* is an aggressive order that fills the best resting order; a *make* is a passive order that restores the depth at a random level. Times in ns.
+`orderbook_latency`: both books hold a fixed number of resting orders per side (the depth) and see the identical event sequence. A *take* removes the best resting order on one side: the original book adds an aggressive order and matches it, the L3 book receives an execution. A *make* restores the depth at a random level. MSVC, p50 in ns:
 
-| Depth | Order | MSVC p50 | MSVC p99 | GCC 13 p50 | GCC 13 p99 |
-|------:|-------|---------:|---------:|-----------:|-----------:|
-| 10 | take | 122 | 131 | 40 | 81 |
-| 10 | make | 20 | 20 | 20 | 30 |
-| 100 | take | 191 | 202 | 91 | 101 |
-| 100 | make | 50 | 61 | 30 | 40 |
-| 1000 | take | 991 | 1,064 | 604 | 1,194 |
-| 1000 | make | 371 | 404 | 211 | 422 |
+| Depth | take: original → L3 | make: original → L3 |
+|------:|---------------------|---------------------|
+| 10 | 131 → **20** | 20 → **20** |
+| 100 | 191 → **20** | 50 → **20** |
+| 1000 | 1,005 → **20** | 371 → **20** |
 
-Cost grows linearly with depth because each side of the book is a sorted `std::vector`: inserting at or erasing from the front shifts every other order. A take also allocates a `std::vector<Trade>` and reads the clock, which is likely why MSVC is 3× slower than GCC on a small book. Roadmap W04 replaces this structure.
+The original book keeps each side as a sorted `std::vector` of orders, so its cost grows linearly with depth: inserting at, or erasing from, the front shifts every order. The L3 book stays flat. Details: [docs/order_book.md](docs/order_book.md).
 
-The ITCH parser is not benchmarked yet (roadmap W04).
+### A full NASDAQ trading day
+
+`itch_replay` streamed NASDAQ's TotalView-ITCH 5.0 sample for 30 Dec 2019 through the L3 book: every symbol, every order event. GCC 13 under WSL2.
+
+| | |
+|---|---|
+| Messages | 268,744,780 (8.25 GB uncompressed) |
+| End to end, including decompression in a `gzip -dc` pipe | 2.92–2.98 M messages/s (90–92 s) |
+| Book update per order message | p50 131 ns, p90 284–291 ns, p99 495–502 ns, p99.9 757–786 ns (mean 168–173 ns) |
+| Peak live orders | 1,924,078 |
+| Events for unknown orders, over-executions | 0, 0 |
+| Live orders at the end of the day | 0: every order added was executed, deleted or replaced |
+
+A real day costs about 6× more per update than the synthetic benchmark, which keeps one book and its orders in cache. The replay touches thousands of books and a 2-million-order working set.
 
 ### Reproduce
 
@@ -99,9 +110,10 @@ The ITCH parser is not benchmarked yet (roadmap W04).
 cmake --preset gcc-release && cmake --build --preset gcc-release
 ./build/gcc-release/ring_latency --high-priority   # SCHED_FIFO needs root on Linux
 ./build/gcc-release/orderbook_latency
+gzip -dc 12302019.NASDAQ_ITCH50.gz | ./build/gcc-release/itch_replay -   # sample day from emi.nasdaq.com
 ```
 
-On Windows the programs are in `build/msvc-release/Release/`. Both print the CPU, compiler and core pinning with their results. `--help` lists the options.
+On Windows the programs are in `build/msvc-release/Release/`. They print the CPU, compiler and core pinning with their results. `--help` lists the options.
 
 ## 🛠️ Build Instructions
 
@@ -151,8 +163,13 @@ MiniHFT/
 │   ├── Matrix.hpp        # Template matrix class
 │   ├── Statistics.hpp    # Stats functions
 │   ├── RingBuffer.hpp    # Lock-free SPSC queue
-│   ├── OrderBook.hpp     # Limit order book
-│   ├── ItchParser.hpp    # NASDAQ ITCH 5.0
+│   ├── OrderBook.hpp     # Limit order book (original, matches orders itself)
+│   ├── L3OrderBook.hpp   # Order book built from order-level events
+│   ├── ItchBook.hpp      # Applies ITCH events to one L3 book per instrument
+│   ├── OrderIndex.hpp    # Order reference -> order, open addressing
+│   ├── ObjectPool.hpp    # Allocation-free object recycling
+│   ├── ItchMessages.hpp  # NASDAQ ITCH 5.0 message layouts
+│   ├── ItchParser.hpp    # Streaming ITCH reader
 │   ├── Strategy.hpp      # Avellaneda-Stoikov
 │   ├── FpgaPipeline.hpp  # Hardware simulation
 │   └── KernelBypass.hpp  # PMD simulation
@@ -178,7 +195,8 @@ itch_test.exe   # Parse and display
 ### Performance Benchmarks
 ```bash
 ring_latency       # Ring buffer one-way latency percentiles
-orderbook_latency  # Order book latency percentiles by depth
+orderbook_latency  # Original vs L3 order book, latency percentiles by depth
+itch_replay        # Replay a NASDAQ ITCH day: throughput, latency, consistency checks
 ring_buffer_bench  # Google Benchmark: single-thread push + pop
 hw_bench           # Hardware simulation
 ```
@@ -215,6 +233,7 @@ This project demonstrates skills relevant to:
 - [C++ Learning Guide](docs/cpp_learning_guide.md) - Language features explained
 - [Memory Ordering in RingBuffer](docs/memory_ordering.md) - Why each `memory_order` is there, ThreadSanitizer catching a broken copy, x86 vs ARM
 - [RingBuffer v2](docs/ring_buffer_v2.md) - `fetch_add` → store, cached indices, false sharing and batching, each measured on its own
+- [The L3 Order Book](docs/order_book.md) - Design, bugs fixed in the old ITCH code, old vs new, and a full NASDAQ day replayed
 - [Hard Mode Walkthrough](docs/hard_mode_walkthrough.md) - Advanced concepts
 - [Learning Roadmap](learning_roadmap.md) - Structured learning path
 
