@@ -101,9 +101,11 @@ if(MINIHFT_BUILD_TESTS)
     enable_testing()
     set(MINIHFT_TEST_SOURCES
         tests/itch_parser_test.cpp
+        tests/kernel_bypass_test.cpp
         tests/l3_order_book_test.cpp
         tests/latency_histogram_test.cpp
         tests/listener_test.cpp
+        tests/matrix_statistics_test.cpp
         tests/object_pool_test.cpp
         tests/order_index_test.cpp
         tests/ring_buffer_test.cpp

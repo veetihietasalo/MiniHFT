@@ -1,7 +1,9 @@
 #pragma once
 
+#include <cstddef>
 #include <vector>
 #include <iostream>
+#include <limits>
 #include <stdexcept>
 #include <iomanip>
 
@@ -12,9 +14,18 @@ private:
     size_t rows;
     size_t cols;
 
+    // A product that wrapped around would allocate too little, and indices that pass the
+    // bounds checks would then land outside the storage.
+    static size_t elementCount(size_t r, size_t c) {
+        if (c != 0 && r > std::numeric_limits<size_t>::max() / c) {
+            throw std::length_error("Matrix dimensions overflow size_t");
+        }
+        return r * c;
+    }
+
 public:
     // Constructors
-    Matrix(size_t r, size_t c, T initialValue = T{}) : rows(r), cols(c), data(r * c, initialValue) {}
+    Matrix(size_t r, size_t c, T initialValue = T{}) : data(elementCount(r, c), initialValue), rows(r), cols(c) {}
 
     // Accessors
     T& operator()(size_t r, size_t c) {
@@ -60,7 +71,7 @@ public:
         Matrix<T> result(rows, other.cols);
         for (size_t i = 0; i < rows; ++i) {
             for (size_t j = 0; j < other.cols; ++j) {
-                T sum = 0;
+                T sum{};
                 for (size_t k = 0; k < cols; ++k) {
                     sum += (*this)(i, k) * other(k, j);
                 }

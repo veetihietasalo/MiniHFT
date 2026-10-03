@@ -46,8 +46,8 @@ One exception remains: the test binary is built without `-Wnull-dereference`. GC
 
 | Preset | Checks | Tests |
 |--------|--------|------:|
-| `clang-asan-ubsan` | AddressSanitizer + UndefinedBehaviorSanitizer; leak detection on | 52 |
-| `clang-tsan` | ThreadSanitizer, including the test that passes only if TSan reports the deliberately broken queue (W02) | 53 |
+| `clang-asan-ubsan` | AddressSanitizer + UndefinedBehaviorSanitizer; leak detection on | 69 |
+| `clang-tsan` | ThreadSanitizer, including the test that passes only if TSan reports the deliberately broken queue (W02) | 70 |
 
 Both build with `-fno-sanitize-recover=all`, so the first report ends the run and a test can't pass after one. Sanitizer runtimes replace global `operator new`, and so do the zero-allocation tests, so those 8 tests only run in the other builds.
 
@@ -88,10 +88,10 @@ CI uses Ubuntu 24.04's clang-tidy 18. A check newer than that (`misc-use-interna
 
 | Job | What must hold |
 |-----|----------------|
-| `msvc-release` | MSVC `/W4 /WX` build; 60 tests |
-| `gcc-release` | GCC strict warnings with `-Werror`; 60 tests |
-| `clang-tsan` | ThreadSanitizer; 53 tests |
-| `clang-asan-ubsan` | AddressSanitizer + UndefinedBehaviorSanitizer; 52 tests |
+| `msvc-release` | MSVC `/W4 /WX` build; 77 tests |
+| `gcc-release` | GCC strict warnings with `-Werror`; 77 tests |
+| `clang-tsan` | ThreadSanitizer; 70 tests |
+| `clang-asan-ubsan` | AddressSanitizer + UndefinedBehaviorSanitizer; 69 tests |
 | `fuzz` | 60 s of libFuzzer without a crash, starting from the saved inputs and `gen_itch`'s sample feed |
 | `clang-tidy` | 0 findings |
 
@@ -113,5 +113,17 @@ If a sanitizer build dies at startup with `unexpected memory mapping`, the kerne
 
 ## Still open
 
-- **`Matrix.hpp` and `Statistics.hpp` are templates that nothing instantiates.** The header check parses them, but their bodies are never compiled for a real type, so neither the warnings nor the sanitizers see that code. `Matrix`'s constructor also lists its initializers out of declaration order, which `-Wreorder` would reject as soon as it's instantiated. They need tests.
-- **`KernelBypass.hpp` signals between threads with `volatile` and fences.** That is a data race under the C++ memory model; it needs `std::atomic<bool>` with release/acquire, as in `RingBuffer`. Nothing uses it yet.
+- **Too few values give 0 rather than an error.** `mean()` of nothing and `variance()` of one value return 0, while `covariance()` throws (`Statistics.MeanOfNothingAndVarianceOfOneValueAreZero` pins this). With a volatility of 0 from one sample, Avellaneda-Stoikov quotes its narrowest spread with no inventory skew. Pick one contract before a strategy uses these.
+- **MSVC doesn't check initializer order.** Its C5038 is off by default, even at `/W4`, so the `Matrix` bug below failed only the GCC and Clang builds. `/w15038` would turn it on.
+
+### Closed: the three headers nothing used
+
+`Matrix.hpp`, `Statistics.hpp` and `KernelBypass.hpp` used to be listed here. The header check compiled them, but a template's body is only compiled for the types something instantiates, and nothing did. [`tests/matrix_statistics_test.cpp`](../tests/matrix_statistics_test.cpp) and [`tests/kernel_bypass_test.cpp`](../tests/kernel_bypass_test.cpp) now use all three. `Matrix<int>` and `Matrix<double>` are instantiated explicitly, so every member is compiled, `print()` included. Each problem was shown on the old headers before it was fixed:
+
+| Bug | How it showed | Fix |
+|-----|---------------|-----|
+| **`Matrix` listed its initializers out of order.** `data` is declared first but was initialized after `rows` and `cols`. | `-Wreorder` on GCC and Clang, an error with `-Werror` | Initializers in declaration order |
+| **`Matrix(rows, cols)` didn't check `rows * cols` for overflow.** A 2⁶³ × 2 matrix wrapped to 0 elements and allocated nothing, yet `m(0, 0)` passed the bounds check. | `Matrix.DimensionsWhoseProductOverflowsAreRefused` failed. Writing `m(0, 0)`: UBSan, reference binding to null pointer | The constructor throws `std::length_error` |
+| **`movingAverage` divided `T` by `size_t`.** With integer data that division was unsigned: the window {−2, −4} of `int64_t` averaged to 9,223,372,036,854,775,805. | `-Wconversion` on GCC and `-Wimplicit-int-float-conversion` on Clang, for `double` and `float` | The window size is converted to `T`. All five templates now require `std::floating_point`: an integer mean would be truncated (the mean of {1, 2} was 1), so integer data no longer compiles. `return 0.0` became `return T{}`. |
+| **`KernelBypass` signalled with a `volatile bool` and fences.** Fences only synchronize through an atomic object, so the flag itself was a data race. | `KernelBypass.TwoThreadsDeliverEveryPacketInOrder` under clang-tsan, within the first lap: `poll()` reading `ready` races with `nicReceive()` writing it | `ready` is a `std::atomic<bool>`: release store in `nicReceive()`, acquire load in `poll()` |
+| **`nicReceive()` overwrote packets the CPU hadn't polled.** With only the fix above, a NIC that laps the CPU rewrites a slot the CPU may still be reading, and packets are lost. | `KernelBypass.FullRingRefusesPacketsUntilTheCpuPolls`: the 1,025th packet came out in place of packet 0 | The return handoff, as in `RingBuffer`: `poll()` clears `ready` with a release store, and `nicReceive()` checks it with an acquire load. It returns `false` while the slot is full, as a real NIC drops a packet when it has no free descriptor. |
