@@ -3,8 +3,9 @@
 //   - ThreadSanitizer build: TSan reports a data race on the slot. In that build this program
 //     is registered as a test that passes only if the report appears.
 //   - Normal build on x86: usually no damaged messages at all. x86 never lets one store become
-//     visible before an earlier one, so the missing release goes unnoticed. ARM gives no such
-//     guarantee. See docs/memory_ordering.md.
+//     visible before an earlier one, so the missing release goes unnoticed.
+//   - Normal build on ARM: stale and torn messages, in every run with `small`. On AArch64 this
+//     program is registered as a test that passes only if some arrive. See docs/memory_ordering.md.
 //
 // Usage: relaxed_publish_demo [messages=1000000] [release] [small] [until-damaged]
 //   release:       publish() is a release (RingV0FetchAdd): the control.

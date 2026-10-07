@@ -92,6 +92,8 @@ CI uses Ubuntu 24.04's clang-tidy 18. A check newer than that (`misc-use-interna
 | `gcc-release` | GCC strict warnings with `-Werror`; 77 tests |
 | `clang-tsan` | ThreadSanitizer; 70 tests |
 | `clang-asan-ubsan` | AddressSanitizer + UndefinedBehaviorSanitizer; 69 tests |
+| `gcc-release (arm64)` | The same build on AArch64 (Arm Neoverse N2), where stores really are reordered; 78 tests, including one that passes only if the broken queue delivers damaged messages ([memory_ordering.md](memory_ordering.md#measured-on-arm)) |
+| `clang-tsan (arm64)` | ThreadSanitizer on AArch64; 70 tests |
 | `fuzz` | 60 s of libFuzzer without a crash, starting from the saved inputs and `gen_itch`'s sample feed |
 | `clang-tidy` | 0 findings |
 

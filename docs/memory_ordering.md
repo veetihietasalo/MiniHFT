@@ -1,6 +1,6 @@
 # Memory ordering in `RingBuffer`
 
-[`RingBuffer`](../include/RingBuffer.hpp) is a single-producer / single-consumer queue built from two atomics, `head` and `tail`, and four memory orders. This page justifies each one. It then breaks one on purpose to show what ThreadSanitizer reports, and why the broken version still runs correctly on x86.
+[`RingBuffer`](../include/RingBuffer.hpp) is a single-producer / single-consumer queue built from two atomics, `head` and `tail`, and four memory orders. This page justifies each one. It then breaks one on purpose to show what ThreadSanitizer reports, why the broken version still runs correctly on x86, and how it fails on ARM.
 
 ## Two hand-offs
 
@@ -50,6 +50,7 @@ Two refinements from W03 ([ring_buffer_v2.md](ring_buffer_v2.md)) keep these edg
 | MSVC, x86-64 (Ryzen 9 9900X3D) | 1,000,000 messages, **0 damaged** |
 | GCC 13, x86-64 (same machine, WSL2) | 10,000,000 messages, **0 damaged** |
 | Clang 18 + ThreadSanitizer | **data race reported** on the first run |
+| GCC 13 and Clang 18, AArch64 (Arm Neoverse N2, CI runner), 8-slot queue | 30,000,000 messages, **damaged messages in every run** ([measured on ARM](#measured-on-arm)) |
 
 The ThreadSanitizer report, trimmed:
 
@@ -78,7 +79,7 @@ The compiler output shows it. Here are the same operations compiled with `clang 
 | `load(acquire)` | `movq` | **`ldar`** | **`ldar`** |
 | `load(relaxed)` | `movq` | `ldr` | `ldr` |
 
-On x86 the broken `publish()` compiles to *exactly the same instructions* as the correct one. The mistake disappears in the machine code, so no test on this machine can catch it. On ARM the release version uses instructions with ordering semantics (`stlxr`, `ldaddl`, `ldar`) and the relaxed version doesn't. There, the slot writes (`stp`) may become visible to the consumer *after* the new `head`, and the consumer reads a stale slot.
+On x86 the broken `publish()` compiles to *exactly the same instructions* as the correct one. The mistake disappears in the machine code, so no test on this machine can catch it. On ARM the release version uses instructions with ordering semantics (`stlxr`, `ldaddl`, `ldar`) and the relaxed version doesn't. There, the slot writes (`stp`) may become visible to the consumer *after* the new `head`, and the consumer reads a stale slot. On real ARM hardware, that is exactly what happens ([below](#measured-on-arm)).
 
 The source is wrong on x86 too, not just on ARM. The compiler may move the plain slot stores after a relaxed atomic. Clang happened not to here, but a different compiler, flag or surrounding code could.
 
@@ -104,6 +105,40 @@ clang -O2 -S -o - --target=aarch64-linux-gnu -march=armv8.1-a ordering.c
 ```
 
 </details>
+
+### Measured on ARM
+
+CI also runs on a GitHub `ubuntu-24.04-arm` runner: 4 vCPUs of an Azure Cobalt 100, whose cores are Arm Neoverse N2. There the broken queue, built *without* ThreadSanitizer, delivers damaged messages:
+
+| Queue, on Neoverse N2 | Messages per run | GCC 13 | Clang 18 |
+|-----------------------|-----------------:|--------|----------|
+| relaxed `publish()`, 1024 slots | 100M | damage in 2 of 6 runs (46 and 22 messages) | damage in 1 of 6 runs (1 message) |
+| relaxed `publish()`, 8 slots | 30M | **damage in 8 of 8 runs**, 85 to 2,081 messages | **damage in 8 of 8 runs**, 2 to 4,772 messages |
+| release `publish()` (the control), 8 slots | 30M | 0 in 5 runs | |
+| release `publish()` (the control), 1024 slots | 100M | 0 in 7 runs | |
+
+Almost every damaged message is a whole *stale* message. Its sequence number and payload are those of the slot's previous occupant, one lap earlier, and its checksum is consistent. The rest, a few percent, are *torn*: some of the producer's four 16-byte stores are visible and some aren't, so the checksum fails.
+
+The compiler isn't the cause. GCC's producer loop, disassembled on the runner, keeps the stores in program order:
+
+```text
+stp  x19, x10, [x7, #128]       // seq, payload[0]
+stp  x9, x8,   [x7, #144]       // payload[1], payload[2]
+stp  x4, x3,   [x7, #160]       // payload[3], payload[4]
+stp  x2, x5,   [x7, #176]       // payload[5], checksum
+bl   __aarch64_ldadd8_relax     // head += 1: LDADD, no release
+```
+
+The CPU made the increment visible to the consumer before the four stores. With `memory_order_release` the call is `__aarch64_ldadd8_rel`, i.e. `LDADDL`, which can't become visible before earlier stores. That's the control row: no damage.
+
+**Why 8 slots shows it so much more.** With 8 slots, the consumer read each slot less than a microsecond before the producer writes it again. So the slot's cache line is most likely still in the consumer's cache, and each slot store has to take it back first. A relaxed increment of `head` doesn't wait for that. (The cache states weren't measured.) With 1024 slots, damage only appeared in the runs where the two threads stayed in lock-step: those ran in 12–16 s instead of 6–7 s, and spent almost no time yielding on a full or empty queue.
+
+**What it means:**
+- The bug is real on hardware that's widely deployed (Graviton, Cobalt, Axion and Grace all use Neoverse cores), not only a rule of the C++ memory model.
+- It's rare. With 8 slots, between 1 in 6,000 and 1 in 15 million messages was damaged. With 1024 slots it was about 1 in 10 million or fewer, and 9 of the 12 runs of 100M messages showed nothing at all. A stress test that passes on ARM is evidence, not proof. ThreadSanitizer, which also runs on the ARM runner in CI, found the race on the first run.
+- So the stress tests in `tests/`, at 100,000–300,000 messages, could easily pass on ARM even with this bug.
+
+CI keeps the measurement as a test: `ARM.RelaxedPublishDamagesMessages`, registered for native AArch64 builds without a sanitizer. It runs the 8-slot broken queue in rounds of 10M messages, up to 300M, and passes once a round delivers a damaged message. On the N2 runner it passed 11 of 11 times, taking 0.7–6.3 s. It is the hardware counterpart of `TSan.CatchesRelaxedPublish`. Another ARM core may reorder less often. If it fails there, the hardware didn't show the reordering within 300M messages; it doesn't mean `RingBuffer` is broken.
 
 ## Your call: when is `seq_cst` worth it?
 
@@ -142,4 +177,13 @@ cmake --preset clang-tsan && cmake --build --preset clang-tsan
 ctest --preset clang-tsan -R "Stress|TSan"          # both stress tests + TSan catching the broken queue
 ./build/clang-tsan/relaxed_publish_demo 20000       # prints the full ThreadSanitizer report
 ./build/gcc-release/relaxed_publish_demo 10000000   # the same broken queue runs clean on x86
+```
+
+On AArch64 Linux (CI uses `ubuntu-24.04-arm`):
+
+```bash
+cmake --preset gcc-release && cmake --build --preset gcc-release
+./build/gcc-release/relaxed_publish_demo 30000000 small           # stale and torn messages
+./build/gcc-release/relaxed_publish_demo 30000000 release small   # the control: none
+ctest --preset gcc-release -R ARM                                  # passes only if damage shows up
 ```

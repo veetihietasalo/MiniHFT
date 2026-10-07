@@ -47,22 +47,6 @@ jobs:
       - name: Test
         run: ctest --preset ${{ matrix.preset }}
 
-      # TEMPORARY: final numbers for docs/memory_ordering.md.
-      - name: Relaxed-publish experiment
-        if: matrix.os == 'ubuntu-24.04-arm' && matrix.preset == 'gcc-release'
-        shell: bash
-        run: |
-          demo=build/gcc-release/relaxed_publish_demo
-          clang++ -std=c++20 -O2 -Iinclude -Itests tests/relaxed_publish_demo.cpp -pthread -o demo-clang
-          for cmd in "$demo 30000000 small" "./demo-clang 30000000 small" "$demo 30000000 release small" "$demo 100000000 release"; do
-            for run in 1 2 3 4 5; do
-              start=$(date +%s%N)
-              out=$(timeout 300 $cmd || true)
-              printf '%-50s %6d ms  %s\n' "$cmd" $(( ($(date +%s%N) - start) / 1000000 )) "$out"
-            done
-          done
-          ctest --test-dir build/gcc-release -R ARM --repeat until-fail:10 --output-on-failure
-
   # Coverage-guided fuzzing of the ITCH reader and dispatch, under ASan and UBSan.
   fuzz:
     name: fuzz (itch_fuzz, 60 s)
