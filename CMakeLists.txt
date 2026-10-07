@@ -134,6 +134,9 @@ if(MINIHFT_BUILD_TESTS)
 
     # Misuses of concepts, static_asserts and [[nodiscard]] that must fail to compile.
     include(cmake/CompileFailTests.cmake)
+
+    # SPSC stress under three thread schedules, and the benchmark harnesses run under the sanitizers.
+    include(cmake/SanitizerSmokeTests.cmake)
 endif()
 
 if(MINIHFT_BUILD_BENCHMARKS)
