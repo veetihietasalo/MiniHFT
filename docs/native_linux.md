@@ -31,7 +31,19 @@ sudo sysctl -w kernel.sched_rt_runtime_us=950000
 
 - **Why build first, then use sudo:** the build runs as you, so `build/` doesn't end up owned by root. `--high-priority` (SCHED_FIFO) needs root.
 - **What it runs:** the same matrix as the Windows script, then the full day once on each CCD. Expect 10–15 minutes.
-- **Output:** the log goes to `build/bench-results/`.
+- **Output:** the log goes to `build/bench-results/`, with one JSON file per harness run next to it.
+
+### Baseline and check
+
+To tell whether a change made things faster or slower, save the current commit's results as a baseline, then check a later build against it:
+
+```bash
+sudo bench/run_ccd_matrix.sh --no-build --runs=3 --save-baseline   # the commit to compare against
+# ...change, rebuild as yourself...
+sudo bench/run_ccd_matrix.sh --no-build --runs=3 --check           # exit 1 on a regression
+```
+
+`--check` fails only on the central metrics (`min`, `p50`, the means and throughputs); tail percentiles are listed for reading. Use 3 runs or more, and keep the settings below the same for both. [verification.md](verification.md#benchmark-baselines) covers the verdict rule and why tails aren't gated.
 
 ### Settings that change the numbers
 

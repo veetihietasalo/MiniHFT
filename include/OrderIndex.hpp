@@ -8,6 +8,7 @@
 // node. Deletion uses backward shifting instead of tombstones, so the table never fills with
 // dead entries during a trading day that adds and removes hundreds of millions of orders.
 
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
 #include <vector>
@@ -18,6 +19,17 @@ public:
     static constexpr uint64_t kEmpty = ~uint64_t{0}; // marks unused slots, so it can never be a key
 
     explicit OrderIndex(size_t expectedEntries = 1024) { rehash(capacityFor(expectedEntries)); }
+
+    // Not movable. The implicit moves took the slots but kept the size, mask and shift, so the
+    // next call on the moved-from index read an empty table. Making a moved-from index usable
+    // would cost an emptiness check in every find(): measured at +2 ns on a ~30 ns take
+    // (docs/verification.md). Nothing moves an index (the book builder owns one for the whole
+    // day), so moving one is a compile error instead (tests/compile_fail/order_index_move.cpp).
+    OrderIndex(const OrderIndex&) = default;
+    OrderIndex& operator=(const OrderIndex&) = default;
+    OrderIndex(OrderIndex&&) = delete;
+    OrderIndex& operator=(OrderIndex&&) = delete;
+    ~OrderIndex() = default;
 
     [[nodiscard]] size_t size() const { return size_; }
     [[nodiscard]] size_t capacity() const { return slots_.size(); }
@@ -89,6 +101,10 @@ private:
     [[nodiscard]] size_t home(uint64_t key) const { return static_cast<size_t>((key * 0x9E3779B97F4A7C15ULL) >> shift_); }
 
     void rehash(size_t newCapacity) {
+        // A power of two, at least 16 (capacityFor), so shift_ ends up at most 60 and home()
+        // never shifts by 64. Stated here because the static analyzer can't follow capacityFor's
+        // loop and would otherwise assume any capacity.
+        assert(newCapacity >= 16 && (newCapacity & (newCapacity - 1)) == 0);
         std::vector<Slot> old;
         old.swap(slots_);
         slots_.assign(newCapacity, Slot{});

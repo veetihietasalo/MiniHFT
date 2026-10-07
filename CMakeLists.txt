@@ -14,12 +14,27 @@ set(MINIHFT_SANITIZER "" CACHE STRING "GCC/Clang sanitizers to build everything 
 # Sanitizers go on every target, dependencies included: TSan needs all code
 # that touches shared memory to be instrumented to avoid false reports.
 # -fno-sanitize-recover makes the first report stop the program, so a test can't pass after one.
+#
+# The clang-asan-ubsan and clang-fuzz presets add the UBSan checks that -fsanitize=undefined
+# leaves out: float-divide-by-zero, local-bounds, implicit-conversion and nullability (which
+# checks _Nonnull/_Nullable annotations: there are none yet, so it guards future ones).
+# unsigned-integer-overflow stays off. Unsigned arithmetic wraps by definition, and every report
+# it gave on the tests, the fuzzer and the programs was wrapping on purpose: OrderIndex's
+# Fibonacci hash, the checksums in tests/SpscStress.hpp and bench/Listeners.hpp, the
+# `for (i = n; i-- > 0;)` loop in itch_test, npos + 1 in ItchBookBuilder::onStockDirectory, and
+# inside the standard library (std::string's npos arithmetic, std::mt19937_64's seeding,
+# std::uniform_int_distribution). None was a bug. Silencing them would take Clang-only
+# attributes in our headers and an ignorelist entry for the whole standard library.
 if(MINIHFT_SANITIZER)
     if(MSVC)
         message(FATAL_ERROR "MINIHFT_SANITIZER is only supported with GCC/Clang")
     endif()
     add_compile_options(-fsanitize=${MINIHFT_SANITIZER} -fno-sanitize-recover=all -fno-omit-frame-pointer -g)
     add_link_options(-fsanitize=${MINIHFT_SANITIZER})
+    if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        # Per-check exclusions for code MiniHFT doesn't own; the file says what and why.
+        add_compile_options(-fsanitize-ignorelist=${CMAKE_CURRENT_SOURCE_DIR}/sanitizer-ignorelist.txt)
+    endif()
 endif()
 
 find_package(Threads REQUIRED)
@@ -119,6 +134,8 @@ if(MINIHFT_BUILD_TESTS)
         tests/tsc_test.cpp)
     # The zero-allocation tests replace global operator new/delete for the test binary. Sanitizer
     # runtimes define their own, so those tests are left out of sanitizer builds.
+    # libstdc++'s debug mode (gcc-debug-stl) keeps them: its checked iterators register in a list
+    # inside the container and never allocate, so the hot paths still count 0 allocations.
     if(NOT MINIHFT_SANITIZER)
         list(APPEND MINIHFT_TEST_SOURCES tests/allocation_counter.cpp tests/zero_alloc_test.cpp)
     endif()
@@ -144,6 +161,12 @@ if(MINIHFT_BUILD_TESTS)
         set_tests_properties(ARM.RelaxedPublishDamagesMessages PROPERTIES
             PASS_REGULAR_EXPRESSION ", [1-9][0-9]* bad " TIMEOUT 300)
     endif()
+
+    # Misuses of concepts, static_asserts and [[nodiscard]] that must fail to compile.
+    include(cmake/CompileFailTests.cmake)
+
+    # SPSC stress under three thread schedules, and the benchmark harnesses run under the sanitizers.
+    include(cmake/SanitizerSmokeTests.cmake)
 endif()
 
 if(MINIHFT_BUILD_BENCHMARKS)
@@ -172,3 +195,5 @@ if(MINIHFT_BUILD_FUZZERS)
     target_compile_options(itch_fuzz PRIVATE -fsanitize=fuzzer)
     target_link_options(itch_fuzz PRIVATE -fsanitize=fuzzer)
 endif()
+
+include(cmake/BenchTools.cmake)

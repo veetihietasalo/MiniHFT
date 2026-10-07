@@ -1,0 +1,13 @@
+# Code the sanitizers leave uninstrumented, per check (Clang's -fsanitize-ignorelist). CMakeLists.txt
+# passes this file to Clang whenever MINIHFT_SANITIZER is set.
+#
+# implicit-conversion is not undefined behaviour. It reports implicit integer conversions that
+# change a value, and MiniHFT's own code is held to it (it already builds with -Wconversion and
+# -Wsign-conversion; the runtime check adds the conversions those warnings can't see, such as ++
+# and += on a narrow type). Code we didn't write isn't: the standard library converts between
+# signed and unsigned on purpose, e.g. std::uniform_int_distribution<int> with a negative bound
+# reports from inside <bits/uniform_int_dist.h> (src/main.cpp does that). The same goes for the
+# fetched dependencies (GoogleTest, Google Benchmark).
+[implicit-conversion]
+src:*/include/c++/*
+src:*/_deps/*

@@ -37,6 +37,18 @@
       }
     },
     {
+      "name": "gcc-debug-stl",
+      "displayName": "GCC Debug + libstdc++ debug mode",
+      "description": "Checked iterators and containers: invalidated iterators, operator[] out of range but within capacity. In CMAKE_CXX_FLAGS so every target, GoogleTest included, gets the debug containers' layout.",
+      "inherits": "linux-base",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CMAKE_CXX_COMPILER": "g++",
+        "CMAKE_CXX_FLAGS": "-D_GLIBCXX_DEBUG -D_GLIBCXX_DEBUG_PEDANTIC -D_GLIBCXX_ASSERTIONS",
+        "MINIHFT_BUILD_BENCHMARKS": "OFF"
+      }
+    },
+    {
       "name": "clang-tsan",
       "displayName": "Clang + ThreadSanitizer",
       "inherits": "linux-base",
@@ -48,24 +60,28 @@
       }
     },
     {
-      "name": "clang-asan-ubsan",
-      "displayName": "Clang + AddressSanitizer + UndefinedBehaviorSanitizer",
-      "inherits": "linux-base",
+      "name": "asan-ubsan",
+      "hidden": true,
+      "description": "ASan, UBSan, and the UBSan checks -fsanitize=undefined leaves out (CMakeLists.txt says why unsigned-integer-overflow isn't one of them)",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "RelWithDebInfo",
         "CMAKE_CXX_COMPILER": "clang++",
-        "MINIHFT_SANITIZER": "address,undefined",
+        "MINIHFT_SANITIZER": "address,undefined,float-divide-by-zero,local-bounds,implicit-conversion,nullability"
+      }
+    },
+    {
+      "name": "clang-asan-ubsan",
+      "displayName": "Clang + AddressSanitizer + UndefinedBehaviorSanitizer",
+      "inherits": ["linux-base", "asan-ubsan"],
+      "cacheVariables": {
         "MINIHFT_BUILD_BENCHMARKS": "OFF"
       }
     },
     {
       "name": "clang-fuzz",
       "displayName": "Clang + libFuzzer (with ASan and UBSan)",
-      "inherits": "linux-base",
+      "inherits": ["linux-base", "asan-ubsan"],
       "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
-        "CMAKE_CXX_COMPILER": "clang++",
-        "MINIHFT_SANITIZER": "address,undefined",
         "MINIHFT_BUILD_FUZZERS": "ON",
         "MINIHFT_BUILD_TESTS": "OFF",
         "MINIHFT_BUILD_BENCHMARKS": "OFF"
@@ -85,6 +101,7 @@
   "buildPresets": [
     { "name": "msvc-release", "configurePreset": "msvc-release", "configuration": "Release" },
     { "name": "gcc-release", "configurePreset": "gcc-release" },
+    { "name": "gcc-debug-stl", "configurePreset": "gcc-debug-stl" },
     { "name": "clang-tsan", "configurePreset": "clang-tsan" },
     { "name": "clang-asan-ubsan", "configurePreset": "clang-asan-ubsan" },
     { "name": "clang-fuzz", "configurePreset": "clang-fuzz", "targets": ["itch_fuzz", "gen_itch"] }
@@ -98,6 +115,7 @@
     },
     { "name": "msvc-release", "inherits": "test-base", "configurePreset": "msvc-release", "configuration": "Release" },
     { "name": "gcc-release", "inherits": "test-base", "configurePreset": "gcc-release" },
+    { "name": "gcc-debug-stl", "inherits": "test-base", "configurePreset": "gcc-debug-stl" },
     {
       "name": "clang-tsan",
       "inherits": "test-base",
@@ -109,7 +127,7 @@
       "inherits": "test-base",
       "configurePreset": "clang-asan-ubsan",
       "environment": {
-        "ASAN_OPTIONS": "detect_leaks=1:strict_string_checks=1",
+        "ASAN_OPTIONS": "detect_leaks=1:strict_string_checks=1:detect_stack_use_after_return=1:check_initialization_order=1:strict_init_order=1",
         "UBSAN_OPTIONS": "print_stacktrace=1"
       }
     }

@@ -20,7 +20,8 @@ constexpr size_t CACHE_LINE_SIZE = 64;
 // reads the other's cache line on every call. Measurements: docs/ring_buffer_v2.md.
 template <typename T, size_t Size>
 class RingBuffer {
-    static_assert((Size & (Size - 1)) == 0, "Size must be power of 2");
+    // The bit test alone lets 0 through: a queue with no slots, always full and always empty.
+    static_assert(Size > 0 && (Size & (Size - 1)) == 0, "Size must be power of 2");
 
 private:
     // Written only by the producer; kept on its own cache line.

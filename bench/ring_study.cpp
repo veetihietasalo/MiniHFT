@@ -9,12 +9,16 @@
 // Usage: ring_study [--producer=2] [--consumer=3] [--burst=10000000] [--reps=5]
 //                   [--paced=500000] [--interval-ns=1000] [--high-priority]
 //                   [--producer-work-ns=0] [--consumer-work-ns=0]
+//                   [--json=FILE] [--commit=SHA] [--label=NAME]
 // The work options add busy work per message on one side, so the queue settles near empty
 // (slow producer) or near full (slow consumer) instead of swinging between the two.
+// --json=FILE also writes the results for bench/compare.py, per variant:
+// ring_study/<variant>/burst/ns_per_msg, .../burst/throughput and .../paced/p50 and so on.
 
 #include <algorithm>
 #include <cstdint>
 #include <cstdio>
+#include <string>
 #include <vector>
 
 #include "BenchCommon.hpp"
@@ -37,9 +41,11 @@ struct StudyConfig {
 };
 
 bool g_failed = false;
+bool g_allPinned = true;
 
+// `name` heads the table row; `slug` names the variant's JSON metrics.
 template <typename Queue>
-void study(const char* name, const StudyConfig& s) {
+void study(const char* name, const char* slug, const StudyConfig& s, bench::JsonReport& report) {
     std::vector<double> nsPerMessage;
     for (int rep = 0; rep < s.reps; ++rep) {
         RingRunConfig burst = s.base;
@@ -49,6 +55,7 @@ void study(const char* name, const StudyConfig& s) {
         burst.recordLatency = false;
         const auto r = runRing<Queue>(burst, s.ticksPerNs);
         if (r->outOfOrder != 0) g_failed = true;
+        if (!r->producerPinned || !r->consumerPinned) g_allPinned = false;
         nsPerMessage.push_back(r->nsPerMessage(burst.messages, s.ticksPerNs));
     }
     std::sort(nsPerMessage.begin(), nsPerMessage.end());
@@ -61,18 +68,25 @@ void study(const char* name, const StudyConfig& s) {
     paced.recordLatency = true;
     const auto p = runRing<Queue>(paced, s.ticksPerNs);
     if (p->outOfOrder != 0 || p->negativeDeltas != 0) g_failed = true;
+    if (!p->producerPinned || !p->consumerPinned) g_allPinned = false;
 
     auto ns = [&](uint64_t ticks) { return static_cast<double>(ticks) / s.ticksPerNs; };
     std::printf("%-34s %10.2f %10.1f %10.1f %10.1f %10.1f\n", name, median, 1e3 / median,
                 ns(p->sendToReceive.valueAtPercentile(50)), ns(p->sendToReceive.valueAtPercentile(90)),
                 ns(p->sendToReceive.valueAtPercentile(99)));
+
+    const std::string prefix = std::string("ring_study/") + slug;
+    report.add(prefix + "/burst/ns_per_msg", "ns", median);
+    report.add(prefix + "/burst/throughput", "M msg/s", 1e3 / median, bench::JsonReport::Better::Higher);
+    report.addHistogram(prefix + "/paced", p->sendToReceive, s.ticksPerNs);
 }
 
 } // namespace
 
 int main(int argc, char** argv) {
     if (bench::hasFlag(argc, argv, "--help")) {
-        std::printf("usage: ring_study [--producer=2] [--consumer=3] [--burst=10000000] [--reps=5] [--paced=500000] [--interval-ns=1000] [--high-priority] [--producer-work-ns=0] [--consumer-work-ns=0]\n");
+        std::printf("usage: ring_study [--producer=2] [--consumer=3] [--burst=10000000] [--reps=5] [--paced=500000] [--interval-ns=1000] [--high-priority] [--producer-work-ns=0] [--consumer-work-ns=0]\n"
+                    "                  [--json=FILE] [--commit=SHA] [--label=NAME]\n");
         return 0;
     }
     const long long producerWorkNs = bench::argInt(argc, argv, "producer-work-ns", 0);
@@ -80,6 +94,8 @@ int main(int argc, char** argv) {
     StudyConfig s;
     s.ticksPerNs = Tsc::calibrateTicksPerNs();
     const uint64_t overhead = Tsc::measureOverheadTicks();
+    bench::JsonReport report("ring_study", argc, argv);
+    report.setTimer(s.ticksPerNs, overhead);
     const uint64_t intervalNs = static_cast<uint64_t>(bench::argInt(argc, argv, "interval-ns", 1000));
     s.base.producerCore = static_cast<int>(bench::argInt(argc, argv, "producer", 2));
     s.base.consumerCore = static_cast<int>(bench::argInt(argc, argv, "consumer", 3));
@@ -103,18 +119,20 @@ int main(int argc, char** argv) {
     std::printf("%-34s %10s %10s %10s %10s %10s\n", "variant", "burst", "burst", "paced", "paced", "paced");
     std::printf("%-34s %10s %10s %10s %10s %10s\n", "", "ns/msg", "M msg/s", "p50 ns", "p90 ns", "p99 ns");
 
-    study<RingV0FetchAdd<RingMessage, kSize>>("v0  fetch_add (original)", s);
-    study<RingV1Store<RingMessage, kSize>>("v1  store(release)", s);
-    study<RingV2<RingMessage, kSize>>("v2  + cached indices", s);
-    study<RingBuffer<RingMessage, kSize>>("    RingBuffer.hpp (ships v2)", s);
-    study<RingV2<RingMessage, kSize, 1, false>>("v2  false sharing (one line)", s);
-    study<RingV2<RingMessage, kSize, 4>>("v2  batch publish x4", s);
-    study<RingV2<RingMessage, kSize, 16>>("v2  batch publish x16", s);
-    study<RingV2<RingMessage, kSize, 64>>("v2  batch publish x64", s);
+    study<RingV0FetchAdd<RingMessage, kSize>>("v0  fetch_add (original)", "v0_fetch_add", s, report);
+    study<RingV1Store<RingMessage, kSize>>("v1  store(release)", "v1_store", s, report);
+    study<RingV2<RingMessage, kSize>>("v2  + cached indices", "v2_cached", s, report);
+    study<RingBuffer<RingMessage, kSize>>("    RingBuffer.hpp (ships v2)", "ringbuffer_hpp", s, report);
+    study<RingV2<RingMessage, kSize, 1, false>>("v2  false sharing (one line)", "v2_false_sharing", s, report);
+    study<RingV2<RingMessage, kSize, 4>>("v2  batch publish x4", "v2_batch4", s, report);
+    study<RingV2<RingMessage, kSize, 16>>("v2  batch publish x16", "v2_batch16", s, report);
+    study<RingV2<RingMessage, kSize, 64>>("v2  batch publish x64", "v2_batch64", s, report);
 
+    report.setPinned(g_allPinned);
+    const bool written = report.write();
     if (g_failed) {
         std::printf("\nWARNING: out-of-order messages or negative TSC deltas in at least one run\n");
         return 1;
     }
-    return 0;
+    return written ? 0 : 2;
 }
