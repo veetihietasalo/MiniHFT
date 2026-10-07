@@ -80,8 +80,16 @@ TEST(RingBuffer, SpscStressDeliversEveryMessageIntactAndInOrder) {
 // An 8-slot queue is full or empty most of the time, so every slot changes hands constantly.
 // That leans on edge 2 (consume() release -> claim() acquire): the producer must never
 // overwrite a slot the consumer is still copying.
+//
+// On ARM the stores really can be reordered, but a missing release damaged anywhere from 1 in
+// 6,000 to 1 in 15 million messages of an 8-slot queue (docs/memory_ordering.md), so ARM runs
+// 5M. x86 never reorders these stores, so it keeps the short run.
 TEST(RingBuffer, SpscStressWithTinyQueueNeverOverwritesUnreadSlots) {
+#if defined(__aarch64__)
+    constexpr uint64_t kCount = 5'000'000;
+#else
     constexpr uint64_t kCount = 100'000;
+#endif
     const StressResult r = runSpscStress<RingBuffer<StressMessage, 8>>(kCount);
     EXPECT_EQ(r.received, kCount);
     EXPECT_TRUE(r.clean()) << r.badSequence << " bad sequence, " << r.badPayload << " bad payload, "

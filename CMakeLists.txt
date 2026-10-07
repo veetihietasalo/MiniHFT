@@ -47,6 +47,11 @@ else()
         $<$<NOT:$<STREQUAL:$<TARGET_PROPERTY:NAME>,minihft_tests>>:-Wnull-dereference>)
     if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
         target_compile_options(minihft_core INTERFACE -Wduplicated-cond -Wlogical-op)
+        # GCC on AArch64 notes that passing std::pair<double, double> changed ABI in GCC 10.1.
+        # Everything here is built by one compiler, so the note is noise.
+        if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64)$")
+            target_compile_options(minihft_core INTERFACE -Wno-psabi)
+        endif()
     endif()
     if(MINIHFT_WARNINGS_AS_ERRORS)
         target_compile_options(minihft_core INTERFACE -Werror)
@@ -130,6 +135,14 @@ if(MINIHFT_BUILD_TESTS)
         add_test(NAME TSan.CatchesRelaxedPublish COMMAND relaxed_publish_demo 20000)
         set_tests_properties(TSan.CatchesRelaxedPublish PROPERTIES
             PASS_REGULAR_EXPRESSION "WARNING: ThreadSanitizer: data race")
+    endif()
+    # Without a sanitizer on AArch64, the same queue really does deliver stale and torn messages:
+    # the test passes only if some arrive. Measured on Neoverse N2 (docs/memory_ordering.md),
+    # where the first 10M-message round almost always has some; other ARM cores may differ.
+    if(NOT MINIHFT_SANITIZER AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64)$")
+        add_test(NAME ARM.RelaxedPublishDamagesMessages COMMAND relaxed_publish_demo 300000000 small until-damaged)
+        set_tests_properties(ARM.RelaxedPublishDamagesMessages PROPERTIES
+            PASS_REGULAR_EXPRESSION ", [1-9][0-9]* bad " TIMEOUT 300)
     endif()
 endif()
 

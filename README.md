@@ -3,7 +3,7 @@
 [![Build Status](https://img.shields.io/badge/build-passing-brightgreen)]()
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![C++](https://img.shields.io/badge/C++-20-00599C.svg)](https://isocpp.org/)
-[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux-lightgrey)]()
+[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20x86--64%20%7C%20Linux%20ARM64-lightgrey)]()
 
 > A production-grade educational HFT engine demonstrating advanced C++, quantitative finance, and low-latency systems concepts.
 
@@ -132,7 +132,7 @@ On Windows the programs are in `build/msvc-release/Release/`. They print the CPU
 
 ### Prerequisites
 - **Windows**: Visual Studio 2022 or newer, CMake 3.25+
-- **Linux / WSL2**: GCC 13+ or Clang 18+, CMake 3.25+, Ninja
+- **Linux / WSL2**: GCC 13+ or Clang 18+, CMake 3.25+, Ninja. x86-64 or AArch64: on ARM the timestamps come from the generic timer (`CNTVCT_EL0`) instead of the TSC
 - GoogleTest and Google Benchmark are downloaded automatically on first configure
 
 ### Build and test
@@ -147,7 +147,7 @@ Each preset builds into `build/<preset>/`:
 | `clang-fuzz` | Linux | libFuzzer target for the ITCH parser (`itch_fuzz`) |
 | `clang-tidy` | Linux | Configure only: the compile database clang-tidy runs on |
 
-Every preset treats warnings as errors. CI builds and tests the first four on each push, fuzzes for 60 s and runs clang-tidy; see [Code Quality](docs/code_quality.md).
+Every preset treats warnings as errors. CI builds and tests the first four on each push, plus `gcc-release` and `clang-tsan` on an ARM64 runner, where the lock-free stress tests face real store reordering. It also fuzzes for 60 s and runs clang-tidy; see [Code Quality](docs/code_quality.md).
 
 ```bash
 cmake --preset gcc-release          # configure (use msvc-release on Windows)
@@ -249,7 +249,7 @@ This project demonstrates skills relevant to:
 ## 📖 Documentation
 
 - [C++ Learning Guide](docs/cpp_learning_guide.md) - Language features explained
-- [Memory Ordering in RingBuffer](docs/memory_ordering.md) - Why each `memory_order` is there, ThreadSanitizer catching a broken copy, x86 vs ARM
+- [Memory Ordering in RingBuffer](docs/memory_ordering.md) - Why each `memory_order` is there, ThreadSanitizer catching a broken copy, x86 vs ARM, and the broken copy failing on a Neoverse N2
 - [RingBuffer v2](docs/ring_buffer_v2.md) - `fetch_add` → store, cached indices, false sharing and batching, each measured on its own
 - [The L3 Order Book](docs/order_book.md) - Design, bugs fixed in the old ITCH code, old vs new, and a full NASDAQ day replayed
 - [Zero-Overhead Extension Points](docs/zero_overhead.md) - Concepts for handlers and listeners, template vs virtual listener cost, the generated assembly, and zero-allocation tests
