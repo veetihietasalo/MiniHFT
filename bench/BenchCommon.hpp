@@ -1,12 +1,17 @@
 #pragma once
 
-// Shared helpers for the latency benchmarks: machine description, argument parsing
-// and the percentile table.
+// Shared helpers for the latency benchmarks: machine description, argument parsing,
+// the percentile table, and the --json=FILE results that bench/compare.py reads.
 
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <vector>
 
@@ -85,6 +90,15 @@ namespace bench {
         return fallback;
     }
 
+    // --name=value as text, or an empty string when absent.
+    inline std::string argString(int argc, char** argv, const char* name) {
+        const std::string prefix = std::string("--") + name + "=";
+        for (int i = 1; i < argc; ++i) {
+            if (std::strncmp(argv[i], prefix.c_str(), prefix.size()) == 0) return argv[i] + prefix.size();
+        }
+        return {};
+    }
+
     // --name=a,b,c as integers, or `fallback` when absent.
     inline std::vector<long long> argIntList(int argc, char** argv, const char* name, std::vector<long long> fallback) {
         const std::string prefix = std::string("--") + name + "=";
@@ -122,4 +136,175 @@ namespace bench {
                     ns(h.valueAtPercentile(99)), ns(h.valueAtPercentile(99.9)),
                     ns(h.valueAtPercentile(99.99)), ns(h.max()));
     }
+
+    // Build type for the JSON metadata. Unlike buildType() it also tells apart a GCC or Clang
+    // build without optimization: NDEBUG at -O0 isn't a release build.
+    inline const char* jsonBuildType() {
+#if !defined(NDEBUG)
+        return "debug";
+#elif defined(__GNUC__) && !defined(__OPTIMIZE__)
+        return "NDEBUG, not optimized";
+#else
+        return "release";
+#endif
+    }
+
+    // `text` as a JSON string, quotes included. Control characters are escaped; bytes from 0x80
+    // up pass through, so UTF-8 stays UTF-8.
+    inline std::string jsonString(std::string_view text) {
+        constexpr char kHex[] = "0123456789abcdef";
+        std::string out;
+        out.reserve(text.size() + 2);
+        out += '"';
+        for (const char c : text) {
+            switch (c) {
+                case '"': out += "\\\""; break;
+                case '\\': out += "\\\\"; break;
+                case '\n': out += "\\n"; break;
+                case '\r': out += "\\r"; break;
+                case '\t': out += "\\t"; break;
+                default: {
+                    const auto code = static_cast<unsigned char>(c);
+                    if (code < 0x20) {
+                        out += "\\u00";
+                        out += kHex[code >> 4];
+                        out += kHex[code & 0xF];
+                    } else {
+                        out += c;
+                    }
+                    break;
+                }
+            }
+        }
+        out += '"';
+        return out;
+    }
+
+    // A finite double as a JSON number. NaN and the infinities have no JSON form: null.
+    inline std::string jsonNumber(double value) {
+        if (!std::isfinite(value)) return "null";
+        char text[32];
+        std::snprintf(text, sizeof text, "%.10g", value);
+        return text;
+    }
+
+    // Machine-readable results, written when the program is given --json=FILE: the run's
+    // metadata (benchmark, arguments, CPU, compiler, build type, timer, pinning) and a flat list of
+    // metrics with stable names such as orderbook/new/depth=100/take/p99. bench/compare.py compares
+    // such files against a baseline. The human-readable output doesn't change.
+    //
+    // --commit=SHA and --label=NAME are recorded as given. A label keeps apart runs that report the
+    // same metric names under a different setup, such as two core pairs in the CCD matrix.
+    class JsonReport {
+    public:
+        enum class Better : std::uint8_t { Lower, Higher };
+
+        JsonReport(const char* benchmark, int argc, char** argv)
+            : benchmark_(benchmark), path_(argString(argc, argv, "json")), commit_(argString(argc, argv, "commit")),
+              label_(argString(argc, argv, "label")) {
+            args_.reserve(static_cast<std::size_t>(argc));
+            for (int i = 1; i < argc; ++i) {
+                // Where the results go and how they are tagged doesn't change them.
+                const std::string_view arg = argv[i];
+                if (arg.starts_with("--json=") || arg.starts_with("--commit=") || arg.starts_with("--label=")) continue;
+                args_.emplace_back(arg);
+            }
+        }
+
+        void setTimer(double ticksPerNs, std::uint64_t overheadTicks) {
+            ticksPerNs_ = ticksPerNs;
+            overheadNs_ = static_cast<double>(overheadTicks) / ticksPerNs;
+        }
+
+        // True if every benchmark thread was pinned to its core.
+        void setPinned(bool pinned) { pinned_ = pinned; }
+
+        void add(std::string_view name, const char* unit, double value, Better better = Better::Lower) {
+            metrics_.push_back({std::string(name), unit, value, better});
+        }
+
+        // A histogram of TSC ticks, in ns: <prefix>/min, /p50, /p90, /p99, /p99.9, /p99.99 and /max,
+        // the columns of printTableRow. Nothing for an empty histogram.
+        void addHistogram(std::string_view prefix, const LatencyHistogram& h, double ticksPerNs) {
+            if (h.count() == 0) return;
+            const std::string p(prefix);
+            const auto ns = [ticksPerNs](std::uint64_t ticks) { return static_cast<double>(ticks) / ticksPerNs; };
+            add(p + "/min", "ns", ns(h.min()));
+            add(p + "/p50", "ns", ns(h.valueAtPercentile(50)));
+            add(p + "/p90", "ns", ns(h.valueAtPercentile(90)));
+            add(p + "/p99", "ns", ns(h.valueAtPercentile(99)));
+            add(p + "/p99.9", "ns", ns(h.valueAtPercentile(99.9)));
+            add(p + "/p99.99", "ns", ns(h.valueAtPercentile(99.99)));
+            add(p + "/max", "ns", ns(h.max()));
+        }
+
+        // Writes the file if --json was given. False, after a message on stderr, if it can't.
+        [[nodiscard]] bool write() const {
+            if (path_.empty()) return true;
+            std::string out;
+            out.reserve(2048 + metrics_.size() * 96);
+            out += "{\n  \"schema\": \"minihft-bench/1\",\n  \"metadata\": {\n";
+            out += "    \"benchmark\": " + jsonString(benchmark_) + ",\n";
+            out += "    \"label\": " + jsonString(label_) + ",\n";
+            out += "    \"args\": [";
+            for (std::size_t i = 0; i < args_.size(); ++i) {
+                if (i > 0) out += ", ";
+                out += jsonString(args_[i]);
+            }
+            out += "],\n";
+            out += "    \"commit\": " + jsonString(commit_) + ",\n";
+            out += "    \"cpu\": " + jsonString(cpuBrand()) + ",\n";
+            out += "    \"logical_cpus\": " + std::to_string(std::thread::hardware_concurrency()) + ",\n";
+            out += "    \"os\": " + jsonString(osName()) + ",\n";
+            out += "    \"compiler\": " + jsonString(compilerName()) + ",\n";
+            out += "    \"build_type\": " + jsonString(jsonBuildType()) + ",\n";
+            out += "    \"tsc_ticks_per_ns\": " + jsonNumber(ticksPerNs_) + ",\n";
+            out += "    \"timer_overhead_ns\": " + jsonNumber(overheadNs_) + ",\n";
+            out += std::string("    \"pinned\": ") + (pinned_ ? "true" : "false") + ",\n";
+            out += "    \"unix_time\": " + std::to_string(static_cast<long long>(std::time(nullptr))) + "\n";
+            out += "  },\n  \"metrics\": [\n";
+            for (std::size_t i = 0; i < metrics_.size(); ++i) {
+                const Metric& m = metrics_[i];
+                out += "    {\"name\": ";
+                out += jsonString(m.name);
+                out += ", \"unit\": ";
+                out += jsonString(m.unit);
+                out += ", \"value\": ";
+                out += jsonNumber(m.value);
+                out += m.better == Better::Lower ? ", \"better\": \"lower\"}" : ", \"better\": \"higher\"}";
+                out += i + 1 < metrics_.size() ? ",\n" : "\n";
+            }
+            out += "  ]\n}\n";
+
+            std::FILE* file = std::fopen(path_.c_str(), "wb");
+            if (file == nullptr) {
+                std::fprintf(stderr, "cannot open %s for writing\n", path_.c_str());
+                return false;
+            }
+            const bool written = std::fwrite(out.data(), 1, out.size(), file) == out.size();
+            if (std::fclose(file) != 0 || !written) {
+                std::fprintf(stderr, "cannot write %s\n", path_.c_str());
+                return false;
+            }
+            return true;
+        }
+
+    private:
+        struct Metric {
+            std::string name;
+            std::string unit;
+            double value;
+            Better better;
+        };
+
+        std::string benchmark_;
+        std::string path_;
+        std::string commit_;
+        std::string label_;
+        std::vector<std::string> args_;
+        std::vector<Metric> metrics_;
+        double ticksPerNs_ = 0.0;
+        double overheadNs_ = 0.0;
+        bool pinned_ = false;
+    };
 }

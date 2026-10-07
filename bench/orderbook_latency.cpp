@@ -15,6 +15,9 @@
 // (new+tmpl) and once behind a virtual interface (new+virt), to price that extension point.
 //
 // Usage: orderbook_latency [--depths=10,100,1000] [--events=1000000] [--core=2] [--seed=42]
+//                          [--json=FILE] [--commit=SHA] [--label=NAME]
+// --json=FILE also writes the results for bench/compare.py: orderbook/<book>/depth=<d>/<take|make>/p50
+// and so on for each book (old, new, new_tmpl, new_virt), and orderbook/<book>/depth=<d>/mean_per_event.
 
 #include <algorithm>
 #include <cstdint>
@@ -182,7 +185,8 @@ double meanNsPerEvent(long long depth, const std::vector<Round>& rounds, double 
 
 int main(int argc, char** argv) {
     if (bench::hasFlag(argc, argv, "--help")) {
-        std::printf("usage: orderbook_latency [--depths=10,100,1000] [--events=1000000] [--core=2] [--seed=42]\n");
+        std::printf("usage: orderbook_latency [--depths=10,100,1000] [--events=1000000] [--core=2] [--seed=42]\n"
+                    "                         [--json=FILE] [--commit=SHA] [--label=NAME]\n");
         return 0;
     }
     const std::vector<long long> depths = bench::argIntList(argc, argv, "depths", {10, 100, 1000});
@@ -193,6 +197,9 @@ int main(int argc, char** argv) {
     const bool pinned = ThreadUtils::pinThread(core);
     const double ticksPerNs = Tsc::calibrateTicksPerNs();
     const uint64_t overhead = Tsc::measureOverheadTicks();
+    bench::JsonReport report("orderbook_latency", argc, argv);
+    report.setTimer(ticksPerNs, overhead);
+    report.setPinned(pinned);
 
     std::printf("MiniHFT orderbook_latency: one book update, original OrderBook vs L3 book (W04)\n");
     bench::printMachine(ticksPerNs, overhead);
@@ -217,13 +224,17 @@ int main(int argc, char** argv) {
             runNew<BasicItchBookBuilder<VirtualListener>>(depth, rounds, warmupRounds, VirtualListener{handler});
 
         char label[64];
-        const struct { const char* name; const DepthResult* result; } rows[] = {
-            {"old", oldBook.get()}, {"new", newBook.get()},
-            {"new+tmpl", withTemplate.get()}, {"new+virt", withVirtual.get()}};
+        char metric[128];
+        const struct { const char* name; const char* slug; const DepthResult* result; } rows[] = {
+            {"old", "old", oldBook.get()}, {"new", "new", newBook.get()},
+            {"new+tmpl", "new_tmpl", withTemplate.get()}, {"new+virt", "new_virt", withVirtual.get()}};
         for (const char* kind : {"take", "make"}) {
             for (const auto& row : rows) {
+                const LatencyHistogram& h = kind[0] == 't' ? row.result->take : row.result->make;
                 std::snprintf(label, sizeof label, "%-8s depth %lld  %s", row.name, depth, kind);
-                bench::printTableRow(label, kind[0] == 't' ? row.result->take : row.result->make, ticksPerNs);
+                bench::printTableRow(label, h, ticksPerNs);
+                std::snprintf(metric, sizeof metric, "orderbook/%s/depth=%lld/%s", row.slug, depth, kind);
+                report.addHistogram(metric, h, ticksPerNs);
             }
         }
 
@@ -233,6 +244,12 @@ int main(int argc, char** argv) {
             meanNsPerEvent<BasicItchBookBuilder<VirtualListener>>(depth, rounds, ticksPerNs, VirtualListener{handler});
         std::printf("  mean per event, no timer in the loop (median of 5): new %.2f ns | +tmpl %.2f ns | +virt %.2f ns\n",
                     meanNone, meanTemplate, meanVirtual);
+        const struct { const char* slug; double ns; } means[] = {
+            {"new", meanNone}, {"new_tmpl", meanTemplate}, {"new_virt", meanVirtual}};
+        for (const auto& mean : means) {
+            std::snprintf(metric, sizeof metric, "orderbook/%s/depth=%lld/mean_per_event", mean.slug, depth);
+            report.add(metric, "ns", mean.ns);
+        }
 
         for (const auto* r : {oldBook.get(), newBook.get(), withTemplate.get(), withVirtual.get()}) {
             if (r->trades != r->take.count()) {
@@ -242,5 +259,6 @@ int main(int argc, char** argv) {
             }
         }
     }
+    if (!report.write() && status == 0) status = 2;
     return status;
 }

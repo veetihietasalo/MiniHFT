@@ -9,9 +9,12 @@
 //
 // Usage: ring_latency [--producer=2] [--consumer=3] [--messages=1000000]
 //                     [--warmup=50000] [--interval-ns=1000] [--high-priority]
+//                     [--json=FILE] [--commit=SHA] [--label=NAME]
 // --interval-ns=0 sends back-to-back (burst): then the numbers include queueing.
 // --high-priority raises both threads (Windows: time-critical; Linux: SCHED_FIFO, needs root)
 // so the scheduler is less likely to preempt them.
+// --json=FILE also writes the results as JSON for bench/compare.py (metrics ring_latency/send_to_receive/p50
+// and so on); --commit and --label are recorded in it.
 
 #include <cstdint>
 #include <cstdio>
@@ -23,12 +26,14 @@
 
 int main(int argc, char** argv) {
     if (bench::hasFlag(argc, argv, "--help")) {
-        std::printf("usage: ring_latency [--producer=2] [--consumer=3] [--messages=1000000] [--warmup=50000] [--interval-ns=1000] [--high-priority]\n");
+        std::printf("usage: ring_latency [--producer=2] [--consumer=3] [--messages=1000000] [--warmup=50000] [--interval-ns=1000] [--high-priority]\n"
+                    "                    [--json=FILE] [--commit=SHA] [--label=NAME]\n");
         return 0;
     }
     const double ticksPerNs = Tsc::calibrateTicksPerNs();
     const uint64_t overhead = Tsc::measureOverheadTicks();
     const uint64_t intervalNs = static_cast<uint64_t>(bench::argInt(argc, argv, "interval-ns", 1000));
+    bench::JsonReport report("ring_latency", argc, argv);
 
     RingRunConfig cfg;
     cfg.producerCore = static_cast<int>(bench::argInt(argc, argv, "producer", 2));
@@ -60,11 +65,17 @@ int main(int argc, char** argv) {
     bench::printTableRow("send -> receive", results->sendToReceive, ticksPerNs);
     if (paced) bench::printTableRow("intended -> receive", results->intendedToReceive, ticksPerNs);
 
+    report.setTimer(ticksPerNs, overhead);
+    report.setPinned(results->producerPinned && results->consumerPinned);
+    report.addHistogram("ring_latency/send_to_receive", results->sendToReceive, ticksPerNs);
+    if (paced) report.addHistogram("ring_latency/intended_to_receive", results->intendedToReceive, ticksPerNs);
+    const bool written = report.write();
+
     if (results->outOfOrder != 0 || results->negativeDeltas != 0) {
         std::printf("\nWARNING: %llu out-of-order messages, %llu negative TSC deltas\n",
                     static_cast<unsigned long long>(results->outOfOrder),
                     static_cast<unsigned long long>(results->negativeDeltas));
         return 1;
     }
-    return 0;
+    return written ? 0 : 2;
 }

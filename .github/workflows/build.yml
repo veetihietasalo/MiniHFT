@@ -106,3 +106,24 @@ jobs:
           test -s tidy-files.txt
           echo "$(wc -l < tidy-files.txt) source files"
           xargs -d '\n' -P "$(nproc)" -n 2 clang-tidy-18 -p build/clang-tidy --quiet < tidy-files.txt
+
+  # Benchmarks the merge-base with main (on main: the previous commit) against this commit, both
+  # built and run on the same runner, alternating, and puts the comparison in the job summary.
+  # Shared runners are too noisy to gate on: a regression raises a warning, never a failure.
+  bench-compare:
+    name: bench-compare (report only)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # the merge-base with origin/main, or HEAD~1
+
+      - name: Install Ninja
+        run: sudo apt-get update && sudo apt-get install -y ninja-build
+
+      - name: Compare base and head
+        run: bash bench/ci_compare.sh

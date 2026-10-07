@@ -3,11 +3,14 @@
 // and top-of-book snapshots for a few symbols at fixed times of day.
 //
 // Usage: itch_replay <file | -> [--symbols=AAPL,MSFT,AMZN,TSLA,SPY] [--no-latency] [--core=2]
-//                    [--listener=none|template|virtual]
+//                    [--listener=none|template|virtual] [--json=FILE] [--commit=SHA] [--label=NAME]
 //   gzip -dc 12302019.NASDAQ_ITCH50.gz | ./itch_replay -
 //
 // --listener attaches a top-of-book listener to every book (W05): none, one called through
 // the builder's template parameter, or one behind a virtual interface.
+//
+// --json=FILE also writes the results for bench/compare.py: itch_replay/throughput,
+// itch_replay/mean_per_update and the latency columns per message kind, e.g. itch_replay/all/p50.
 //
 // Exit code 1 if any consistency check fails.
 
@@ -103,7 +106,8 @@ struct Latencies {
 };
 
 template <typename Builder>
-int replay(Builder& builder, std::FILE* file, bool timeEach, const std::vector<std::string>& symbols, double ticksPerNs) {
+int replay(Builder& builder, std::FILE* file, bool timeEach, const std::vector<std::string>& symbols, double ticksPerNs,
+           bench::JsonReport& report) {
     const std::vector<uint64_t> snapshotTimes = {
         9 * kNsPerHour + 30 * kNsPerMinute, 10 * kNsPerHour, 12 * kNsPerHour,
         15 * kNsPerHour + 59 * kNsPerMinute, 16 * kNsPerHour + kNsPerMinute};
@@ -146,6 +150,12 @@ int replay(Builder& builder, std::FILE* file, bool timeEach, const std::vector<s
     if (timeEach && bookMessages > 0) {
         std::printf("  book updates alone: %.1f ns per order message on average (%llu order messages)\n",
                     static_cast<double>(bookTicks) / ticksPerNs / static_cast<double>(bookMessages), ull(bookMessages));
+    }
+    report.add("itch_replay/throughput", "M msg/s", static_cast<double>(reader.messages()) / seconds / 1e6,
+               bench::JsonReport::Better::Higher);
+    if (timeEach && bookMessages > 0) {
+        report.add("itch_replay/mean_per_update", "ns",
+                   static_cast<double>(bookTicks) / ticksPerNs / static_cast<double>(bookMessages));
     }
 
     std::printf("\nOrder events\n");
@@ -203,6 +213,12 @@ int replay(Builder& builder, std::FILE* file, bool timeEach, const std::vector<s
         bench::printTableRow("cancel (X)", latencies->cancel, ticksPerNs);
         bench::printTableRow("delete (D)", latencies->remove, ticksPerNs);
         bench::printTableRow("replace (U)", latencies->replace, ticksPerNs);
+        report.addHistogram("itch_replay/all", latencies->all, ticksPerNs);
+        report.addHistogram("itch_replay/add", latencies->add, ticksPerNs);
+        report.addHistogram("itch_replay/execute", latencies->execute, ticksPerNs);
+        report.addHistogram("itch_replay/cancel", latencies->cancel, ticksPerNs);
+        report.addHistogram("itch_replay/delete", latencies->remove, ticksPerNs);
+        report.addHistogram("itch_replay/replace", latencies->replace, ticksPerNs);
     }
 
     const bool ok = reader.lengthMismatches() == 0 && reader.unknownTypes() == 0 && !reader.truncated() &&
@@ -219,7 +235,7 @@ int main(int argc, char** argv) {
     }
     if (!path || bench::hasFlag(argc, argv, "--help")) {
         std::printf("usage: itch_replay <file | -> [--symbols=AAPL,MSFT,AMZN,TSLA,SPY] [--no-latency] [--core=2]\n"
-                    "                   [--listener=none|template|virtual]\n"
+                    "                   [--listener=none|template|virtual] [--json=FILE] [--commit=SHA] [--label=NAME]\n"
                     "  gzip -dc 12302019.NASDAQ_ITCH50.gz | ./itch_replay -\n");
         return path ? 0 : 2;
     }
@@ -241,6 +257,9 @@ int main(int argc, char** argv) {
     const bool pinned = ThreadUtils::pinThread(core);
     const double ticksPerNs = Tsc::calibrateTicksPerNs();
     const uint64_t overhead = Tsc::measureOverheadTicks();
+    bench::JsonReport report("itch_replay", argc, argv);
+    report.setTimer(ticksPerNs, overhead);
+    report.setPinned(pinned);
 
     std::printf("MiniHFT itch_replay: every order event into per-instrument L3 books\n");
     bench::printMachine(ticksPerNs, overhead);
@@ -251,7 +270,7 @@ int main(int argc, char** argv) {
     int status = 0;
     if (listener == "template") {
         auto builder = std::make_unique<BasicItchBookBuilder<QuoteCounter>>(kExpectedLiveOrders);
-        status = replay(*builder, file, timeEach, symbols, ticksPerNs);
+        status = replay(*builder, file, timeEach, symbols, ticksPerNs, report);
         std::printf("\nListener (template): %llu top-of-book updates, checksum %llu\n",
                     static_cast<unsigned long long>(builder->listener().updates),
                     static_cast<unsigned long long>(builder->listener().checksum));
@@ -260,13 +279,14 @@ int main(int argc, char** argv) {
         IgnoringHandler ignoring;
         TopOfBookHandler* handler = g_useIgnoringHandler ? static_cast<TopOfBookHandler*>(&ignoring) : &counting;
         auto builder = std::make_unique<BasicItchBookBuilder<VirtualListener>>(kExpectedLiveOrders, VirtualListener{handler});
-        status = replay(*builder, file, timeEach, symbols, ticksPerNs);
+        status = replay(*builder, file, timeEach, symbols, ticksPerNs, report);
         std::printf("\nListener (virtual): %llu top-of-book updates, checksum %llu\n",
                     static_cast<unsigned long long>(handler->updates), static_cast<unsigned long long>(handler->checksum));
     } else {
         auto builder = std::make_unique<ItchBookBuilder>(kExpectedLiveOrders);
-        status = replay(*builder, file, timeEach, symbols, ticksPerNs);
+        status = replay(*builder, file, timeEach, symbols, ticksPerNs, report);
     }
     if (file != stdin) std::fclose(file);
+    if (!report.write() && status == 0) status = 2;
     return status;
 }
