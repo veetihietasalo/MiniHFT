@@ -40,23 +40,15 @@ inline uint64_t stressChecksum(const StressMessage& m) {
     return sum;
 }
 
-// What a thread does while the queue is full (producer) or empty (consumer). Spinning keeps the
-// two threads in lock-step, the consumer reading each slot right as it's published: that's
-// where a missing release shows up on weakly ordered hardware.
-enum class StressWait : uint8_t { yield, spin };
-
 template <typename Queue>
-StressResult runSpscStress(uint64_t count, StressWait wait = StressWait::yield) {
+StressResult runSpscStress(uint64_t count) {
     auto queue = std::make_unique<Queue>();
     StressResult result;
-    auto pause = [wait] {
-        if (wait == StressWait::yield) std::this_thread::yield();
-    };
 
     std::thread producer([&] {
         for (uint64_t i = 0; i < count; ++i) {
             StressMessage* slot = nullptr;
-            while ((slot = queue->claim()) == nullptr) pause();
+            while ((slot = queue->claim()) == nullptr) std::this_thread::yield();
             slot->seq = i;
             for (unsigned k = 0; k < 6; ++k) slot->payload[k] = stressWord(i, k);
             slot->checksum = stressChecksum(*slot);
@@ -67,7 +59,7 @@ StressResult runSpscStress(uint64_t count, StressWait wait = StressWait::yield) 
 
     for (uint64_t expected = 0; expected < count; ++expected) {
         const StressMessage* slot = nullptr;
-        while ((slot = queue->peek()) == nullptr) pause();
+        while ((slot = queue->peek()) == nullptr) std::this_thread::yield();
         const StressMessage message = *slot; // copy out before consume(): the producer may reuse the slot after
         queue->consume();
 

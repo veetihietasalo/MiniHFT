@@ -6,11 +6,13 @@
 //     visible before an earlier one, so the missing release goes unnoticed. ARM gives no such
 //     guarantee. See docs/memory_ordering.md.
 //
-// Usage: relaxed_publish_demo [messages=1000000] [release] [spin] [small]
-//   release: run the same queue with publish() a release (RingV0FetchAdd), as a control.
-//   spin:    busy-wait instead of yielding when the queue is full or empty.
-//   small:   8 slots instead of 1024.
+// Usage: relaxed_publish_demo [messages=1000000] [release] [small] [until-damaged]
+//   release:       publish() is a release (RingV0FetchAdd): the control.
+//   small:         8 slots instead of 1024. The consumer has just read every slot the producer
+//                  writes next, and on ARM that makes the reordering far more frequent.
+//   until-damaged: run in rounds of 10M messages, stopping after the first round with damage.
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -24,9 +26,8 @@
 namespace {
 
 template <template <typename, size_t> class Queue>
-StressResult run(uint64_t count, bool small, StressWait wait) {
-    return small ? runSpscStress<Queue<StressMessage, 8>>(count, wait)
-                 : runSpscStress<Queue<StressMessage, 1024>>(count, wait);
+StressResult run(uint64_t count, bool small) {
+    return small ? runSpscStress<Queue<StressMessage, 8>>(count) : runSpscStress<Queue<StressMessage, 1024>>(count);
 }
 
 } // namespace
@@ -35,17 +36,27 @@ int main(int argc, char** argv) {
     const uint64_t count = argc > 1 ? std::strtoull(argv[1], nullptr, 10) : 1'000'000;
     bool control = false;
     bool small = false;
-    StressWait wait = StressWait::yield;
+    bool untilDamaged = false;
     for (int i = 2; i < argc; ++i) {
         if (std::strcmp(argv[i], "release") == 0) control = true;
-        if (std::strcmp(argv[i], "spin") == 0) wait = StressWait::spin;
         if (std::strcmp(argv[i], "small") == 0) small = true;
+        if (std::strcmp(argv[i], "until-damaged") == 0) untilDamaged = true;
     }
-    const StressResult r = control ? run<RingV0FetchAdd>(count, small, wait) : run<RelaxedPublishRingBuffer>(count, small, wait);
+
+    StressResult total;
+    for (uint64_t remaining = count; remaining > 0 && (!untilDamaged || total.clean());) {
+        const uint64_t n = untilDamaged ? std::min<uint64_t>(remaining, 10'000'000) : remaining;
+        const StressResult r = control ? run<RingV0FetchAdd>(n, small) : run<RelaxedPublishRingBuffer>(n, small);
+        total.received += r.received;
+        total.badSequence += r.badSequence;
+        total.badPayload += r.badPayload;
+        total.badChecksum += r.badChecksum;
+        remaining -= n;
+    }
 
     std::printf("%s publish: %llu messages, %llu bad sequence, %llu bad payload, %llu bad checksum\n",
-                control ? "release" : "relaxed", static_cast<unsigned long long>(r.received),
-                static_cast<unsigned long long>(r.badSequence), static_cast<unsigned long long>(r.badPayload),
-                static_cast<unsigned long long>(r.badChecksum));
-    return r.clean() ? 0 : 1;
+                control ? "release" : "relaxed", static_cast<unsigned long long>(total.received),
+                static_cast<unsigned long long>(total.badSequence), static_cast<unsigned long long>(total.badPayload),
+                static_cast<unsigned long long>(total.badChecksum));
+    return total.clean() ? 0 : 1;
 }

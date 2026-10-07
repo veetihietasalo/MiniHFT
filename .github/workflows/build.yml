@@ -47,24 +47,21 @@ jobs:
       - name: Test
         run: ctest --preset ${{ matrix.preset }}
 
-      # TEMPORARY: measure the deliberately broken queue on real weak-memory hardware.
+      # TEMPORARY: final numbers for docs/memory_ordering.md.
       - name: Relaxed-publish experiment
         if: matrix.os == 'ubuntu-24.04-arm' && matrix.preset == 'gcc-release'
         shell: bash
         run: |
+          demo=build/gcc-release/relaxed_publish_demo
           clang++ -std=c++20 -O2 -Iinclude -Itests tests/relaxed_publish_demo.cpp -pthread -o demo-clang
-          for demo in build/gcc-release/relaxed_publish_demo ./demo-clang; do
-            for opts in "" "spin" "small" "spin small"; do
-              for run in 1 2 3; do
-                start=$(date +%s%N)
-                out=$(timeout 300 "$demo" 30000000 $opts || true)
-                printf '%-40s %-12s %6d ms  %s\n' "$demo" "[$opts]" $(( ($(date +%s%N) - start) / 1000000 )) "$out"
-              done
+          for cmd in "$demo 30000000 small" "./demo-clang 30000000 small" "$demo 30000000 release small" "$demo 100000000 release"; do
+            for run in 1 2 3 4 5; do
+              start=$(date +%s%N)
+              out=$(timeout 300 $cmd || true)
+              printf '%-50s %6d ms  %s\n' "$cmd" $(( ($(date +%s%N) - start) / 1000000 )) "$out"
             done
           done
-          for opts in "release spin" "release spin small"; do
-            timeout 300 build/gcc-release/relaxed_publish_demo 30000000 $opts || true
-          done
+          ctest --test-dir build/gcc-release -R ARM --repeat until-fail:10 --output-on-failure
 
   # Coverage-guided fuzzing of the ITCH reader and dispatch, under ASan and UBSan.
   fuzz:
