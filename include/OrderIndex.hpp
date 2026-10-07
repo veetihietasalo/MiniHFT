@@ -8,8 +8,10 @@
 // node. Deletion uses backward shifting instead of tombstones, so the table never fills with
 // dead entries during a trading day that adds and removes hundreds of millions of orders.
 
+#include <cassert>
 #include <cstddef>
 #include <cstdint>
+#include <utility>
 #include <vector>
 
 template <typename Value>
@@ -19,13 +21,34 @@ public:
 
     explicit OrderIndex(size_t expectedEntries = 1024) { rehash(capacityFor(expectedEntries)); }
 
+    // A moved-from index is empty and can be used again: it has no slots until the next
+    // tryInsert() allocates them. The implicit moves would take the slots but keep the old size,
+    // mask and shift, and the next call on the source would index an empty table.
+    OrderIndex(const OrderIndex&) = default;
+    OrderIndex& operator=(const OrderIndex&) = default;
+    OrderIndex(OrderIndex&& other) noexcept
+        : slots_(std::move(other.slots_)), mask_(other.mask_), shift_(other.shift_), size_(other.size_) {
+        other.becomeEmpty();
+    }
+    OrderIndex& operator=(OrderIndex&& other) noexcept {
+        if (this != &other) {
+            slots_ = std::move(other.slots_);
+            mask_ = other.mask_;
+            shift_ = other.shift_;
+            size_ = other.size_;
+            other.becomeEmpty();
+        }
+        return *this;
+    }
+    ~OrderIndex() = default;
+
     [[nodiscard]] size_t size() const { return size_; }
     [[nodiscard]] size_t capacity() const { return slots_.size(); }
 
     // Value for `key`, or nullptr if absent. The pointer is valid until the next tryInsert(),
     // which may rehash the table.
     [[nodiscard]] Value* find(uint64_t key) {
-        if (key == kEmpty) return nullptr;
+        if (key == kEmpty || size_ == 0) return nullptr; // size_ == 0: a moved-from index has no slots
         for (size_t i = home(key);; i = (i + 1) & mask_) {
             Slot& s = slots_[i];
             if (s.key == key) return &s.value;
@@ -37,7 +60,8 @@ public:
     // kEmpty: an existing entry is never overwritten.
     [[nodiscard]] bool tryInsert(uint64_t key, const Value& value) {
         if (key == kEmpty) return false;
-        if ((size_ + 1) * 2 > slots_.size()) rehash(slots_.size() * 2); // keep load factor <= 0.5
+        // Keeps the load factor <= 0.5: twice the slots when full, 16 for a moved-from index.
+        if ((size_ + 1) * 2 > slots_.size()) rehash(capacityFor(size_ + 1));
         for (size_t i = home(key);; i = (i + 1) & mask_) {
             Slot& s = slots_[i];
             if (s.key == key) return false;
@@ -51,7 +75,7 @@ public:
 
     // Removes `key`; returns false if it wasn't there.
     bool erase(uint64_t key) {
-        if (key == kEmpty) return false;
+        if (key == kEmpty || size_ == 0) return false; // size_ == 0: a moved-from index has no slots
         size_t hole = home(key);
         while (slots_[hole].key != key) {
             if (slots_[hole].key == kEmpty) return false;
@@ -79,6 +103,11 @@ private:
         Value value{};
     };
 
+    void becomeEmpty() noexcept {
+        slots_.clear(); // a moved-from vector is empty already; this makes it certain
+        size_ = 0;
+    }
+
     static size_t capacityFor(size_t entries) {
         size_t c = 16;
         while (c < entries * 2) c *= 2;
@@ -89,6 +118,10 @@ private:
     [[nodiscard]] size_t home(uint64_t key) const { return static_cast<size_t>((key * 0x9E3779B97F4A7C15ULL) >> shift_); }
 
     void rehash(size_t newCapacity) {
+        // A power of two, at least 16 (capacityFor), so shift_ ends up at most 60 and home()
+        // never shifts by 64. Stated here because the static analyzer can't follow capacityFor's
+        // loop and would otherwise assume any capacity.
+        assert(newCapacity >= 16 && (newCapacity & (newCapacity - 1)) == 0);
         std::vector<Slot> old;
         old.swap(slots_);
         slots_.assign(newCapacity, Slot{});

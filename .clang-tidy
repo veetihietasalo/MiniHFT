@@ -1,5 +1,11 @@
 # Bug-finding checks, run by CI on every push (docs/code_quality.md).
 #
+# clang-analyzer-* is the Clang Static Analyzer: it follows paths through calls and reports
+# null dereferences, undefined shifts, use after move or free, leaks and uninitialized reads.
+# Every family is on, optin.* included: none of them is noise here. It found a real bug (a
+# moved-from OrderIndex indexed an empty table) and one path it couldn't rule out on its own,
+# now stated as an assert in OrderIndex::rehash.
+#
 # Turned off, and why:
 #   bugprone-easily-swappable-parameters  The ITCH encoders and handlers take the wire format's
 #       fields in wire order, several integers in a row. The fix is a strong type per field;
@@ -11,6 +17,7 @@ Checks: >
   -*,
   bugprone-*,
   -bugprone-easily-swappable-parameters,
+  clang-analyzer-*,
   concurrency-*,
   cppcoreguidelines-slicing,
   cppcoreguidelines-virtual-class-destructor,

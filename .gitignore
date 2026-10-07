@@ -38,6 +38,7 @@ Makefile
 # Output files
 *.txt
 !CMakeLists.txt
+!sanitizer-ignorelist.txt
 *.itch
 
 # OS
