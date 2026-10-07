@@ -22,7 +22,7 @@ using Variants = ::testing::Types<
 TYPED_TEST_SUITE(RingVariantTest, Variants);
 
 TYPED_TEST(RingVariantTest, DeliversEveryMessageIntactAndInOrder) {
-    constexpr uint64_t kCount = 100'003; // not a multiple of any batch size: flush() must publish the tail end
+    constexpr uint64_t kCount = stressCount(100'000) + 3; // not a multiple of any batch size: flush() must publish the tail end
     const StressResult r = runSpscStress<TypeParam>(kCount);
     EXPECT_EQ(r.received, kCount);
     EXPECT_TRUE(r.clean()) << r.badSequence << " bad sequence, " << r.badPayload << " bad payload, "

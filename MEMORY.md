@@ -9,7 +9,7 @@ Durable context for agent sessions on MiniHFT: facts that are expensive to redis
 - **Test counts:** 77 (gcc-release x86, MSVC), 78 (gcc-release arm64: adds `ARM.RelaxedPublishDamagesMessages`), 70 (clang-tsan, both architectures), 69 (asan-ubsan).
 - **Still open:**
   - `Network.hpp` is Winsock-only (W09).
-  - The other SPSC stress tests stay at 100k–300k messages on ARM. Only the tiny-queue `RingBuffer` test runs 5M there.
+  - The SPSC stress tests send 5M messages natively on AArch64 (`stressCount()` in `tests/SpscStress.hpp`). x86 and TSan keep 100k–300k. With 1024 slots, even 5M messages catch a relaxed `publish()` only now and then; only the 8-slot rings catch it reliably. 8-slot instantiations of the W03 variants (only `RingV2<8, 8>` exists) would be the real fix; not done.
 
 ## Hardware facts (measured)
 
