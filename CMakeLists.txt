@@ -159,3 +159,5 @@ if(MINIHFT_BUILD_FUZZERS)
     target_compile_options(itch_fuzz PRIVATE -fsanitize=fuzzer)
     target_link_options(itch_fuzz PRIVATE -fsanitize=fuzzer)
 endif()
+
+include(cmake/BenchTools.cmake)

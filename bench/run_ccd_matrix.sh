@@ -7,14 +7,18 @@
 # on different physical cores, using the third and fourth physical core of a CCD.
 #
 # Usage: bench/run_ccd_matrix.sh [--runs=2] [--itch=FILE] [--no-build] [--dry-run]
-#   --runs=N     repetitions of the whole matrix; each run goes through every pair in turn
-#   --itch=FILE  ITCH 5.0 day, gzipped or not: also replay it once on each CCD
-#   --no-build   skip the cmake configure and build
-#   --dry-run    print the topology and the pairs, run nothing
+#                                [--save-baseline | --check]
+#   --runs=N         repetitions of the whole matrix; each run goes through every pair in turn
+#   --itch=FILE      ITCH 5.0 day, gzipped or not: also replay it once on each CCD
+#   --no-build       skip the cmake configure and build
+#   --dry-run        print the topology and the pairs, run nothing
+#   --save-baseline  keep this run's JSON results as the baseline, in build/bench-baseline/
+#   --check          compare this run with that baseline (bench/compare.py); exit 1 on a regression
 #
 # --high-priority (SCHED_FIFO) needs root. Build as yourself, then run the matrix with sudo:
 #   bench/run_ccd_matrix.sh --dry-run && sudo bench/run_ccd_matrix.sh --no-build --itch=...
-# Output goes to the console and to build/bench-results/<timestamp>.log.
+# Output goes to the console and to build/bench-results/<timestamp>.log. Each harness run also
+# writes its results as JSON, to build/bench-results/<timestamp>/<pair>-<bench>-run<N>.json.
 # Only native Linux gives meaningful CCD numbers: in a VM or WSL2, pinning picks virtual CPUs.
 
 set -euo pipefail
@@ -23,20 +27,36 @@ runs=2
 itch=""
 build=1
 dry=0
+save_baseline=0
+check=0
 for arg in "$@"; do
     case "$arg" in
         --runs=*) runs="${arg#*=}" ;;
         --itch=*) itch="${arg#*=}" ;;
         --no-build) build=0 ;;
         --dry-run) dry=1 ;;
-        -h | --help) sed -n '2,19p' "$0"; exit 0 ;;
+        --save-baseline) save_baseline=1 ;;
+        --check) check=1 ;;
+        -h | --help) sed -n '2,23p' "$0"; exit 0 ;;
         *) echo "unknown option: $arg (see --help)" >&2; exit 2 ;;
     esac
 done
 if [[ -n $itch && ! -r $itch ]]; then echo "cannot read $itch" >&2; exit 2; fi
+if ((save_baseline && check)); then echo "--save-baseline and --check exclude each other" >&2; exit 2; fi
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 bin="$root/build/gcc-release"
+baseline_dir="$root/build/bench-baseline"
+# --check thresholds in %: the tail is set by the OS more than by the code, and varies far more
+# between runs than the median does.
+thresholds=(--threshold 5 --threshold 'p99=15' --threshold 'p99.9=30' --threshold 'p99.99=50' --threshold 'max=100')
+if ((check)); then
+    if ! compgen -G "$baseline_dir/*.json" > /dev/null; then
+        echo "no baseline in $baseline_dir: save one first with --save-baseline" >&2
+        exit 2
+    fi
+    command -v python3 > /dev/null || { echo "--check needs python3" >&2; exit 2; }
+fi
 sys="${MINIHFT_SYSFS:-/sys/devices/system/cpu}" # overridable so the topology code can be tested
 
 # "0-5,12-17" -> "0 1 2 3 4 5 12 13 14 15 16 17"
@@ -115,9 +135,11 @@ thp="$(read_or /sys/kernel/mm/transparent_hugepage/enabled n/a)"
 thp="${thp#*\[}" && thp="${thp%%\]*}"
 rt_runtime="$(read_or /proc/sys/kernel/sched_rt_runtime_us n/a)"
 if ((EUID == 0)); then priority="SCHED_FIFO (root)"; else priority="normal (SCHED_FIFO needs root)"; fi
+commit="$(git -C "$root" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+if [[ $commit != unknown ]] && ! git -C "$root" diff --quiet HEAD -- 2>/dev/null; then commit+="-dirty"; fi
 
 header=(
-    "# MiniHFT CCD matrix, $(date '+%Y-%m-%d %H:%M'), commit $(git -C "$root" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+    "# MiniHFT CCD matrix, $(date '+%Y-%m-%d %H:%M'), commit $commit"
     "cpu         $(grep -m1 'model name' /proc/cpuinfo | cut -d: -f2 | xargs)"
     "cores       ${#primaries[@]} physical, ${#cpus[@]} logical, SMT $( ((${#primaries[@]} < ${#cpus[@]})) && echo on || echo off)"
 )
@@ -140,6 +162,8 @@ warnings=()
 [[ $virt != none ]] && warnings+=("WARNING: running under $virt. Pinning picks virtual CPUs, so the CCD comparison means nothing here.")
 ((EUID == 0)) && [[ $rt_runtime != -1 ]] &&
     warnings+=("NOTE: RT throttling is on (sched_rt_runtime_us=$rt_runtime). On kernels that still throttle, a spinning SCHED_FIFO thread can be stopped for up to 50 ms per second, which lands in max.")
+((save_baseline || check)) && ((runs < 3)) &&
+    warnings+=("NOTE: --runs=$runs. compare.py trusts a change only if the runs of the two sides don't overlap; with 2 runs a side, noise alone separates them 1 time in 6. Use --runs=3 or more for baselines and checks.")
 
 if ((dry)); then
     printf '%s\n' "${header[@]}" "${warnings[@]}"
@@ -152,29 +176,35 @@ if ((build)); then
 fi
 
 out_dir="$root/build/bench-results"
-mkdir -p "$out_dir"
-log_file="$out_dir/$(date '+%Y%m%d-%H%M%S').log"
+stamp="$(date '+%Y%m%d-%H%M%S')"
+log_file="$out_dir/$stamp.log"
+json_dir="$out_dir/$stamp" # one JSON file per harness run, for bench/compare.py
+mkdir -p "$json_dir"
 log() { printf '%s\n' "$@" | tee -a "$log_file"; }
 
+# run NAME PROGRAM ARGS...: the results also go to $json_dir/NAME-run<pass>.json, labelled NAME.
 run() {
+    local name=$1
+    shift
     log "" "> $*"
     set +e
-    "$bin/$1" "${@:2}" 2>&1 | tee -a "$log_file"
+    "$bin/$1" "${@:2}" --json="$json_dir/$name-run$pass.json" --label="$name" --commit="$commit" 2>&1 | tee -a "$log_file"
     local rc=${PIPESTATUS[0]}
     set -e
     ((rc == 0)) || log "!! $1 exited with code $rc"
 }
 
-replay() { # $1 = core for itch_replay, $2 = core for gzip (same CCD, another physical core)
+replay() { # $1 = core for itch_replay, $2 = core for gzip (same CCD, another physical core), $3 = CCD
     local rc
+    local json=(--json="$json_dir/ccd$3-itch_replay-run1.json" --label="ccd$3-itch_replay" --commit="$commit")
     set +e
     if [[ $itch == *.gz ]]; then
         log "" "> gzip -dc $itch (core $2) | itch_replay - --core=$1"
-        taskset -c "$2" gzip -dc "$itch" | "$bin/itch_replay" - --core="$1" 2>&1 | tee -a "$log_file"
+        taskset -c "$2" gzip -dc "$itch" | "$bin/itch_replay" - --core="$1" "${json[@]}" 2>&1 | tee -a "$log_file"
         rc=${PIPESTATUS[1]}
     else
         log "" "> itch_replay $itch --core=$1"
-        "$bin/itch_replay" "$itch" --core="$1" 2>&1 | tee -a "$log_file"
+        "$bin/itch_replay" "$itch" --core="$1" "${json[@]}" 2>&1 | tee -a "$log_file"
         rc=${PIPESTATUS[0]}
     fi
     set -e
@@ -187,23 +217,45 @@ for ((pass = 1; pass <= runs; pass++)); do
     for i in "${!names[@]}"; do
         log "" "## run $pass, ${names[$i]}: producer ${producers[$i]} -> consumer ${consumers[$i]}"
         pc=("--producer=${producers[$i]}" "--consumer=${consumers[$i]}" "--high-priority")
-        run ring_latency "${pc[@]}"
-        run ring_study "${pc[@]}"
-        run ring_study "${pc[@]}" --producer-work-ns=20 --burst=5000000 --paced=200000
-        run ring_study "${pc[@]}" --consumer-work-ns=20 --burst=5000000 --paced=200000
+        pair="${names[$i],,}"
+        pair="${pair// /-}" # "same CCD0" -> same-ccd0
+        run "$pair-ring_latency" ring_latency "${pc[@]}"
+        run "$pair-ring_study" ring_study "${pc[@]}"
+        run "$pair-ring_study-pwork20" ring_study "${pc[@]}" --producer-work-ns=20 --burst=5000000 --paced=200000
+        run "$pair-ring_study-cwork20" ring_study "${pc[@]}" --consumer-work-ns=20 --burst=5000000 --paced=200000
     done
     # Single-threaded: only the CCD (and its L3 size) can matter.
     for i in "${!ccds[@]}"; do
         log "" "## run $pass, orderbook_latency on CCD$i"
-        run orderbook_latency "--core=$(pick "${ccds[$i]}" 2)"
+        run "ccd$i-orderbook_latency" orderbook_latency "--core=$(pick "${ccds[$i]}" 2)"
     done
 done
 
 if [[ -n $itch ]]; then
     for i in "${!ccds[@]}"; do
         log "" "## itch_replay on CCD$i"
-        replay "$(pick "${ccds[$i]}" 2)" "$(pick "${ccds[$i]}" 4)"
+        replay "$(pick "${ccds[$i]}" 2)" "$(pick "${ccds[$i]}" 4)" "$i"
     done
 fi
 
-log "" "Results written to $log_file"
+log "" "Results written to $log_file, JSON in $json_dir/"
+
+if ((save_baseline)); then
+    if ! compgen -G "$json_dir/*.json" > /dev/null; then
+        log "!! no JSON results to save as the baseline"
+        exit 1
+    fi
+    rm -rf "$baseline_dir"
+    mkdir -p "$baseline_dir"
+    cp "$json_dir"/*.json "$baseline_dir"/
+    log "Saved as the baseline in $baseline_dir (commit $commit). Check a later build with --check."
+fi
+
+if ((check)); then
+    log "" "## compared with the baseline in $baseline_dir"
+    set +e
+    python3 "$root/bench/compare.py" "$baseline_dir" --current "$json_dir" "${thresholds[@]}" 2>&1 | tee -a "$log_file"
+    rc=${PIPESTATUS[0]}
+    set -e
+    exit "$rc"
+fi

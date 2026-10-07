@@ -14,24 +14,53 @@
 
     Each run executes every pair once, then the next run starts, so drift over time hits every
     pair alike. Everything runs at high priority. Output goes to the console and to
-    build\bench-results\<timestamp>.log.
+    build\bench-results\<timestamp>.log. Each harness run also writes its results as JSON, to
+    build\bench-results\<timestamp>\<pair>-<bench>-run<N>.json.
+
+    -SaveBaseline keeps this run's JSON results as the baseline, in build\bench-baseline\.
+    -Check compares this run with that baseline (bench\compare.py, needs Python 3) and exits
+    with 1 on a regression.
 
 .EXAMPLE
     powershell -ExecutionPolicy Bypass -File bench\run_ccd_matrix.ps1
 
 .EXAMPLE
     powershell -ExecutionPolicy Bypass -File bench\run_ccd_matrix.ps1 -NoBuild -Runs 3 -ItchFile D:\itch\12302019.NASDAQ_ITCH50
+
+.EXAMPLE
+    powershell -ExecutionPolicy Bypass -File bench\run_ccd_matrix.ps1 -SaveBaseline   # on the commit to compare against
+    powershell -ExecutionPolicy Bypass -File bench\run_ccd_matrix.ps1 -Check          # later, on the commit to check
 #>
 param(
     [int]$Runs = 2,             # repetitions of the whole matrix
     [string]$ItchFile = "",     # uncompressed ITCH 5.0 day: also replay it once on each CCD
-    [switch]$NoBuild            # skip the cmake configure and build
+    [switch]$NoBuild,           # skip the cmake configure and build
+    [switch]$SaveBaseline,      # keep this run's JSON results as the baseline
+    [switch]$Check              # compare this run with the baseline; exit 1 on a regression
 )
 
 $root = Split-Path -Parent $PSScriptRoot
 $bin = Join-Path $root "build\msvc-release\Release"
+$baselineDir = Join-Path $root "build\bench-baseline"
+# -Check thresholds in %: the tail is set by the OS more than by the code, and varies far more
+# between runs than the median does.
+$thresholds = @("--threshold", "5", "--threshold", "p99=15", "--threshold", "p99.9=30",
+                "--threshold", "p99.99=50", "--threshold", "max=100")
 
 if ([IntPtr]::Size -ne 8) { throw "Run this from 64-bit PowerShell." }
+if ($SaveBaseline -and $Check) { throw "-SaveBaseline and -Check exclude each other." }
+
+$python = $null
+if ($Check) {
+    if (-not (Test-Path (Join-Path $baselineDir "*.json"))) {
+        throw "No baseline in $baselineDir`: save one first with -SaveBaseline."
+    }
+    # The py launcher first: "python" may be the Microsoft Store stub.
+    foreach ($candidate in @("py", "python", "python3")) {
+        if (Get-Command $candidate -ErrorAction SilentlyContinue) { $python = $candidate; break }
+    }
+    if ($null -eq $python) { throw "-Check needs Python 3 (py, python or python3 on PATH)." }
+}
 
 if (-not $NoBuild) {
     Push-Location $root
@@ -117,22 +146,30 @@ if ($ccds.Count -ge 2) {
 if ($pairs.Count -eq 0) { throw "Found no CCD with two physical cores." }
 
 $outDir = Join-Path $root "build\bench-results"
-New-Item -ItemType Directory -Force -Path $outDir | Out-Null
-$log = Join-Path $outDir ((Get-Date -Format "yyyyMMdd-HHmmss") + ".log")
+$stamp = Get-Date -Format "yyyyMMdd-HHmmss"
+$log = Join-Path $outDir ($stamp + ".log")
+$jsonDir = Join-Path $outDir $stamp   # one JSON file per harness run, for bench\compare.py
+New-Item -ItemType Directory -Force -Path $jsonDir | Out-Null
 
 function Log([string]$line) {
     Write-Host $line
     Add-Content -Path $log -Value $line -Encoding UTF8
 }
 
-function Run([string]$exe, [string[]]$arguments) {
+# The results also go to $jsonDir\<name>-run<run>.json, labelled <name>.
+function Run([string]$name, [string]$exe, [string[]]$arguments) {
     Log ""
     Log ("> " + $exe + " " + ($arguments -join " "))
-    & (Join-Path $bin "$exe.exe") @arguments 2>&1 | ForEach-Object { Log ([string]$_) }
+    $json = @("--json=$(Join-Path $jsonDir "$name-run$run.json")", "--label=$name", "--commit=$commit")
+    & (Join-Path $bin "$exe.exe") @arguments @json 2>&1 | ForEach-Object { Log ([string]$_) }
     if ($LASTEXITCODE -ne 0) { Log "!! $exe exited with code $LASTEXITCODE" }
 }
 
 $commit = (git -C $root rev-parse --short HEAD) 2>$null
+if ($commit) {
+    git -C $root diff --quiet HEAD 2>$null
+    if ($LASTEXITCODE -ne 0) { $commit += "-dirty" }
+}
 
 Log "# MiniHFT CCD matrix, $(Get-Date -Format 'yyyy-MM-dd HH:mm'), commit $commit"
 Log "cpu         $((Get-CimInstance Win32_Processor | Select-Object -First 1).Name.Trim())"
@@ -142,32 +179,56 @@ for ($i = 0; $i -lt $l3.Count; $i++) {
 }
 Log "power plan  $((powercfg /getactivescheme) -replace '^.*\((.*)\).*$', '$1')"
 foreach ($p in $pairs) { Log ("pair        {0,-10} producer {1} -> consumer {2}" -f $p.Name, $p.Producer, $p.Consumer) }
+if (($SaveBaseline -or $Check) -and $Runs -lt 3) {
+    Log "NOTE: -Runs $Runs. compare.py trusts a change only if the runs of the two sides don't overlap; with 2 runs a side, noise alone separates them 1 time in 6. Use -Runs 3 or more for baselines and checks."
+}
 
 for ($run = 1; $run -le $Runs; $run++) {
     foreach ($p in $pairs) {
         Log ""
         Log "## run $run, $($p.Name): producer $($p.Producer) -> consumer $($p.Consumer)"
         $pc = @("--producer=$($p.Producer)", "--consumer=$($p.Consumer)", "--high-priority")
-        Run "ring_latency" $pc
-        Run "ring_study" $pc
-        Run "ring_study" ($pc + @("--producer-work-ns=20", "--burst=5000000", "--paced=200000"))
-        Run "ring_study" ($pc + @("--consumer-work-ns=20", "--burst=5000000", "--paced=200000"))
+        $pair = $p.Name.ToLower().Replace(" ", "-")   # "same CCD0" -> same-ccd0
+        Run "$pair-ring_latency" "ring_latency" $pc
+        Run "$pair-ring_study" "ring_study" $pc
+        Run "$pair-ring_study-pwork20" "ring_study" ($pc + @("--producer-work-ns=20", "--burst=5000000", "--paced=200000"))
+        Run "$pair-ring_study-cwork20" "ring_study" ($pc + @("--consumer-work-ns=20", "--burst=5000000", "--paced=200000"))
     }
     # Single-threaded: only the CCD (and its L3 size) can matter.
     for ($i = 0; $i -lt $ccds.Count; $i++) {
         Log ""
         Log "## run $run, orderbook_latency on CCD$i"
-        Run "orderbook_latency" @("--core=$(Pick $ccds[$i] 2)")
+        Run "ccd$i-orderbook_latency" "orderbook_latency" @("--core=$(Pick $ccds[$i] 2)")
     }
 }
 
 if ($ItchFile -ne "") {
+    $run = 1   # the replay runs once: its JSON is ccd<i>-itch_replay-run1.json
     for ($i = 0; $i -lt $ccds.Count; $i++) {
         Log ""
         Log "## itch_replay on CCD$i"
-        Run "itch_replay" @($ItchFile, "--core=$(Pick $ccds[$i] 2)")
+        Run "ccd$i-itch_replay" "itch_replay" @($ItchFile, "--core=$(Pick $ccds[$i] 2)")
     }
 }
 
 Log ""
-Log "Results written to $log"
+Log "Results written to $log, JSON in $jsonDir"
+
+if ($SaveBaseline) {
+    if (-not (Test-Path (Join-Path $jsonDir "*.json"))) {
+        Log "!! no JSON results to save as the baseline"
+        exit 1
+    }
+    if (Test-Path $baselineDir) { Remove-Item -Recurse -Force $baselineDir }
+    New-Item -ItemType Directory -Force -Path $baselineDir | Out-Null
+    Copy-Item -Path (Join-Path $jsonDir "*.json") -Destination $baselineDir
+    Log "Saved as the baseline in $baselineDir (commit $commit). Check a later build with -Check."
+}
+
+if ($Check) {
+    Log ""
+    Log "## compared with the baseline in $baselineDir"
+    & $python (Join-Path $root "bench\compare.py") $baselineDir --current $jsonDir @thresholds 2>&1 |
+        ForEach-Object { Log ([string]$_) }
+    exit $LASTEXITCODE
+}
