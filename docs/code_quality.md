@@ -46,8 +46,9 @@ One exception remains: the test binary is built without `-Wnull-dereference`. GC
 
 | Preset | Checks | Tests |
 |--------|--------|------:|
-| `clang-asan-ubsan` | AddressSanitizer + UndefinedBehaviorSanitizer; leak detection on | 69 |
-| `clang-tsan` | ThreadSanitizer, including the test that passes only if TSan reports the deliberately broken queue (W02) | 70 |
+| `clang-asan-ubsan` | AddressSanitizer + UndefinedBehaviorSanitizer, plus `float-divide-by-zero`, `local-bounds`, `implicit-conversion` and `nullability` ([why, and why not `unsigned-integer-overflow`](verification.md#lifetimes-and-undefined-behaviour-the-gaps-asan-leaves)); leak detection, stack-use-after-return and initialization-order checks on | 104 |
+| `clang-tsan` | ThreadSanitizer, including the tests that pass only if TSan reports a deliberately broken queue | 106 |
+| `gcc-debug-stl` | Not a sanitizer, but in the same spirit: libstdc++ debug mode catches invalidated iterators and out-of-range indexing that ASan can't see | 128 |
 
 Both build with `-fno-sanitize-recover=all`, so the first report ends the run and a test can't pass after one. Sanitizer runtimes replace global `operator new`, and so do the zero-allocation tests, so those 8 tests only run in the other builds.
 
@@ -63,7 +64,7 @@ The input that found bug 1 is kept in [`tests/fuzz/corpus/`](../tests/fuzz/corpu
 ## clang-tidy
 
 [`.clang-tidy`](../.clang-tidy) enables these check families, and any finding is an error:
-- bug-finding: `bugprone-*`, `concurrency-*`, `performance-*`, `misc-*`;
+- bug-finding: `bugprone-*`, `concurrency-*`, `performance-*`, `misc-*`, and the Clang Static Analyzer (`clang-analyzer-*`, added later; [what it found](verification.md#the-bug-a-moved-from-orderindex-read-an-empty-table));
 - a few `modernize-*`, `readability-*` and `cppcoreguidelines-*` checks that catch mistakes rather than enforce a style.
 
 The first run found **158 findings** in 21 files:
@@ -88,12 +89,13 @@ CI uses Ubuntu 24.04's clang-tidy 18. A check newer than that (`misc-use-interna
 
 | Job | What must hold |
 |-----|----------------|
-| `msvc-release` | MSVC `/W4 /WX` build; 127 tests: 77 unit tests, 27 [compile-fail tests](verification.md#compile-fail-tests), 22 [SPSC stress tests](verification.md#memory-ordering-every-threaded-path-more-schedules) and `compare.py`'s tests |
-| `gcc-release` | GCC strict warnings with `-Werror`; the same 127 tests |
+| `msvc-release` | MSVC `/W4 /WX` build; 128 tests: 77 unit tests, 28 [compile-fail tests](verification.md#compile-fail-tests), 22 [SPSC stress tests](verification.md#memory-ordering-every-threaded-path-more-schedules) and `compare.py`'s tests |
+| `gcc-release` | GCC strict warnings with `-Werror`; the same 128 tests |
+| `gcc-debug-stl` | The same 128 tests under libstdc++ debug mode |
 | `clang-tsan` | ThreadSanitizer; 106 tests (no compile-fail tests under a sanitizer; adds the 12 program smoke tests and `TSan.CatchesRelaxedConsume`), then the 22 stress tests 10 more times with new seeds |
 | `clang-asan-ubsan` | AddressSanitizer + UndefinedBehaviorSanitizer; 104 tests |
 | `fuzz` | 60 s of libFuzzer without a crash, starting from the saved inputs and `gen_itch`'s sample feed |
-| `clang-tidy` | 0 findings |
+| `clang-tidy` | 0 findings, Clang Static Analyzer included |
 | `bench-compare` | Report only: benchmarks the merge-base and the head on the same runner and writes the comparison to the job summary ([verification.md](verification.md#benchmark-baselines)). A regression raises a warning, never a failure. |
 
 ## Reproduce
@@ -115,6 +117,7 @@ If a sanitizer build dies at startup with `unexpected memory mapping`, the kerne
 ## Still open
 
 - **Too few values give 0 rather than an error.** `mean()` of nothing and `variance()` of one value return 0, while `covariance()` throws (`Statistics.MeanOfNothingAndVarianceOfOneValueAreZero` pins this). With a volatility of 0 from one sample, Avellaneda-Stoikov quotes its narrowest spread with no inventory skew. Pick one contract before a strategy uses these.
+- **`OrderIndex::capacityFor` loops forever above 2⁶² entries.** Its doubling overflows to 0. No tool reports it, and no real index gets near that size, but a constructor argument can ask for it.
 - **Three calls that can fail still aren't `[[nodiscard]]`:** `OrderIndex::erase`, `FpgaPipeline::output` and `Network::connectToServer`. Making `erase` one means first deciding what `ItchBook::removeOrder` should do when it fails.
 - **MSVC doesn't check initializer order.** Its C5038 is off by default, even at `/W4`, so the `Matrix` bug below failed only the GCC and Clang builds. `/w15038` would turn it on.
 

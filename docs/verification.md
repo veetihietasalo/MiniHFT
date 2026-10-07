@@ -6,7 +6,7 @@ Most of MiniHFT is written with an AI assistant. An AI is reliable in some areas
 |------|-------------------|----------------|---------------|
 | Syntax, idioms, standard library | Rarely | Warnings as errors on three compilers, clang-tidy, and every header compiling on its own | CI ([code_quality.md](code_quality.md)) |
 | Templates, concepts, overload resolution | A confident claim such as "this concept rejects X" that isn't true | [Compile-fail tests](#compile-fail-tests) | CI, every build without a sanitizer |
-| Lifetimes, aliasing, undefined behaviour | Code that follows the rules on paper and breaks them in real use | AddressSanitizer + UndefinedBehaviorSanitizer, fuzzing | CI ([code_quality.md](code_quality.md)) |
+| Lifetimes, aliasing, undefined behaviour | Code that follows the rules on paper and breaks them in real use | AddressSanitizer + UndefinedBehaviorSanitizer and fuzzing, plus [libstdc++ debug mode, stricter UBSan and the Clang Static Analyzer](#lifetimes-and-undefined-behaviour-the-gaps-asan-leaves) | CI |
 | Memory ordering, lock-free code | Plausible but wrong orderings. On x86 these often compile to the same instructions as the right ones. | [ThreadSanitizer on every threaded path](#memory-ordering-every-threaded-path-more-schedules), SPSC stress under three thread schedules, and two tests that pass only if TSan catches a deliberately broken queue | CI ([memory_ordering.md](memory_ordering.md)) |
 | Performance claims | Reasoning about caches and branches without measuring | [Benchmark baselines](#benchmark-baselines): JSON results, `compare.py`, saved baselines, and an A/B job in CI | The benchmark machine; CI only reports |
 
@@ -21,19 +21,20 @@ A `static_assert(!ItchHandler<X>)` shows what a trait answers. It doesn't show t
 
 The tests run one at a time, because they build inside the build tree, while the unit tests keep running in parallel. The broken targets are left out of `compile_commands.json`, so clang-tidy never sees them; it analyses the controls instead. Sanitizer builds skip the tests, since a compile error doesn't depend on the sanitizer.
 
-**What they cover:** 27 tests, on GCC, Clang and MSVC.
+**What they cover:** 28 tests, on GCC, Clang and MSVC.
 
 | Kind | Tests | What each proves |
 |------|------:|------------------|
 | Concepts | 9 | `itch::dispatch` refuses a handler that is missing a method, or one that takes the wrong message type. `BasicItchBookBuilder` refuses a listener with the wrong method, or one whose `onTopOfBook` returns a value. All five `Statistics` templates refuse integer data. |
 | `static_assert`s | 8 | `RingBuffer` and the three ring variants refuse a size that isn't a power of two, and a size of 0. `RingV2` refuses a batch larger than the ring. `ObjectPool` refuses an over-aligned type, and a block size of 0. |
+| Deleted functions | 1 | `OrderIndex` can't be moved ([why](#the-first-fix-cost-2-ns-on-the-hot-path)); the control copies it. |
 | `[[nodiscard]]` | 10 | Under warnings-as-errors, ignoring the result of any of these calls fails the build: `pinThread`, `claim`, `peek`, `tryInsert`, `find`, `acquire`, `nicReceive`, `poll`, `ItchReader::next` and `dispatch`. |
 
-The expected reasons name the constraint, not one compiler's wording, so the same patterns hold for all three compilers. MSVC can only be tested in CI. Its first run there passed all 27, in 32 s.
+The expected reasons name the constraint, not one compiler's wording, so the same patterns hold for all three compilers. MSVC can only be tested in CI. Its first run there passed the first 27, in 32 s.
 
 ### Two bugs the tests found
 
-On the old headers, 6 of the 27 failed on GCC:
+On the old headers, 6 of the first 27 failed on GCC:
 
 | Bug | How it showed | Fix |
 |-----|---------------|-----|
@@ -52,6 +53,45 @@ minihft_compile_fail_test(NAME RingBufferRejectsSizeZero
 ```
 
 Add `WARNING` for a misuse that only fails because of warnings-as-errors, such as an ignored `[[nodiscard]]` result. Those tests exist only when `MINIHFT_WARNINGS_AS_ERRORS` is on, which every preset sets. To run just this group: `ctest --preset gcc-release -L compile-fail`.
+
+## Lifetimes and undefined behaviour: the gaps ASan leaves
+
+AddressSanitizer sees memory, not container rules or paths that tests don't take. Four additions, all in CI:
+
+| Tool | What it adds | Result |
+|------|--------------|--------|
+| **`gcc-debug-stl` preset** | libstdc++ debug mode (`_GLIBCXX_DEBUG`, `_GLIBCXX_DEBUG_PEDANTIC`, `_GLIBCXX_ASSERTIONS`) on every target, GoogleTest included, since debug mode changes the containers' layout. It catches an invalidated iterator, or `operator[]` past `size()` but inside the capacity. ASan misses both, because the memory is still allocated. | 0 reports in the tests and programs, and in 60 s of fuzzing with debug mode on. The zero-allocation tests still pass, so debug mode doesn't allocate on the hot paths. |
+| **Stricter UBSan** | `-fsanitize=undefined` leaves out `float-divide-by-zero`, `local-bounds`, `implicit-conversion` and `nullability`; `clang-asan-ubsan` and `clang-fuzz` now add them. `implicit-conversion` adds the narrowing that `-Wconversion` can't see, such as `+=` on a narrow type. | 0 reports in our code. `implicit-conversion` fired only inside libstdc++ (`uniform_int_distribution<int>`), which [`sanitizer-ignorelist.txt`](../sanitizer-ignorelist.txt) exempts along with the fetched dependencies. `nullability` checks nothing yet, since there are no `_Nonnull` annotations; it's there for future ones. |
+| **Clang Static Analyzer** | `clang-analyzer-*` in [`.clang-tidy`](../.clang-tidy), every family, `optin.*` included. It follows paths through calls that no test takes. | One real bug (below). One path it couldn't rule out is now an `assert` in `OrderIndex::rehash` stating the invariant. The analyzer about doubles clang-tidy's run time. |
+| **ASan options** | `detect_stack_use_after_return`, `check_initialization_order` and `strict_init_order` in the test preset | Nothing found. A two-file static-initialization-order sample is caught only with them. |
+
+**Left off: `unsigned-integer-overflow`.** Unsigned arithmetic wraps by definition. Its 66 reports on the tests came from 10 places, and every one was wrapping on purpose:
+- `OrderIndex`'s Fibonacci hash;
+- the stress-test and listener checksums;
+- `npos + 1` in `onStockDirectory`;
+- the standard library.
+
+Silencing them would take Clang-only attributes in our headers. CMakeLists.txt keeps the full list.
+
+### The bug: a moved-from `OrderIndex` read an empty table
+
+`OrderIndex` had implicit move operations. They took the slot vector but kept `size_`, `mask_` and `shift_`, so any later `find`, `erase` or `tryInsert` on the moved-from index went through an empty vector. `tryInsert` also shifted by 64 in `home()`. No caller moves an index today, but the public API allowed it.
+
+| How it showed | |
+|---|---|
+| Clang Static Analyzer | `core.BitwiseShift`: right shift by 64 in `home()`, reached through `tryInsert` on a table with no slots |
+| A test using the moved-from index | Failed in all three builds. gcc-release segfaulted; UBSan reported "applying non-zero offset 20240 to null pointer"; debug mode reported "out-of-bounds index 1265, but container only holds 0 elements". |
+
+### The first fix cost 2 ns on the hot path
+
+The first fix kept moves and made a moved-from index usable. That meant an emptiness check (`size_ == 0`) in every `find()` and `erase()`. Every take in the book calls `find()`. Nobody had measured it, so `compare.py` did: `orderbook_latency` against the original, 1,000,000 events, runs alternated, benchmark-machine thresholds and gate:
+
+| Fix | Gated regressions against the original | `take/min` |
+|-----|---------------------------------------:|-----------:|
+| Moved-from index usable (emptiness check in `find()` and `erase()`) | 5 of 118 metrics with 5 runs a side, 2 with 6; all on the take path, e.g. `new_virt/depth=10/take/min` +7.7% | +1 to 2.5 ns |
+| Moves deleted | 0, with 6 runs a side | ±0 |
+
+Nothing moves an index: the book builder owns one for the whole trading day. So the moves are deleted. In a release build, `find()` is the same code as before the fix. Moving an index is a compile error, and `CompileFail.OrderIndexCannotBeMoved` proves it. One bug, three tools: the analyzer found it, a sanitizer and debug mode showed it at run time, and the benchmark gate stopped a correct fix that was slower than it had to be.
 
 ## Memory ordering: every threaded path, more schedules
 

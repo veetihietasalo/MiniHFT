@@ -144,12 +144,13 @@ Each preset builds into `build/<preset>/`:
 |--------|----------|---------|
 | `msvc-release` | Windows | Release build with MSVC |
 | `gcc-release` | Linux | Release build with GCC |
+| `gcc-debug-stl` | Linux | GCC with libstdc++ debug mode: checked iterators and containers |
 | `clang-tsan` | Linux | Clang + ThreadSanitizer, for checking the lock-free code |
 | `clang-asan-ubsan` | Linux | Clang + AddressSanitizer + UndefinedBehaviorSanitizer |
 | `clang-fuzz` | Linux | libFuzzer target for the ITCH parser (`itch_fuzz`) |
 | `clang-tidy` | Linux | Configure only: the compile database clang-tidy runs on |
 
-Every preset treats warnings as errors. CI builds and tests the first four on each push, fuzzes for 60 s, runs clang-tidy, and compares benchmarks against the merge-base (report only); see [Code Quality](docs/code_quality.md) and [Verification](docs/verification.md).
+Every preset treats warnings as errors. CI builds and tests the first five on each push, fuzzes for 60 s, runs clang-tidy, and compares benchmarks against the merge-base (report only); see [Code Quality](docs/code_quality.md) and [Verification](docs/verification.md).
 
 ```bash
 cmake --preset gcc-release          # configure (use msvc-release on Windows)
@@ -256,7 +257,7 @@ This project demonstrates skills relevant to:
 - [The L3 Order Book](docs/order_book.md) - Design, bugs fixed in the old ITCH code, old vs new, and a full NASDAQ day replayed
 - [Zero-Overhead Extension Points](docs/zero_overhead.md) - Concepts for handlers and listeners, template vs virtual listener cost, the generated assembly, and zero-allocation tests
 - [Code Quality](docs/code_quality.md) - Six bugs proven by failing tests and then fixed, hardened APIs, sanitizers, fuzzing, clang-tidy, and what CI checks
-- [Verification](docs/verification.md) - A check for each area where AI-written C++ goes wrong: compile-fail tests for concepts and `static_assert`s, TSan on every threaded path with SPSC stress under three schedules, and benchmark baselines with a regression gate, shown catching a real 50 ns regression
+- [Verification](docs/verification.md) - A check for each area where AI-written C++ goes wrong: compile-fail tests for concepts and `static_assert`s, libstdc++ debug mode, stricter UBSan and the static analyzer, TSan on every threaded path with SPSC stress under three schedules, and benchmark baselines with a regression gate, shown catching a real 50 ns regression
 - [Hard Mode Walkthrough](docs/hard_mode_walkthrough.md) - Advanced concepts
 - [Learning Roadmap](learning_roadmap.md) - Structured learning path
 
