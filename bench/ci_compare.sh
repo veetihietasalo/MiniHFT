@@ -30,6 +30,10 @@ summary="${GITHUB_STEP_SUMMARY:-}"
 # Thresholds in %. A GitHub runner is a shared 4-vCPU VM: medians move by several % between runs
 # and tails by far more, so only large changes are reported.
 thresholds=(--threshold 10 --threshold 'p99=25' --threshold 'p99.9=50' --threshold 'p99.99=100' --threshold 'max=200')
+# Only the central metrics raise the warning; tails are listed for reading. With ~120 metrics, noise
+# alone separates a few of them in a no-op comparison (measured: 1 tail "regression" and 5 tail
+# "improvements" for a comment-only change), while a real +50 ns shows in every gated take metric.
+gates=(--gate min --gate p50 --gate 'mean_per_*' --gate real_time --gate cpu_time)
 orderbook_args=(--events=200000 --depths=10,1000)
 gbench_args=(--benchmark_min_time=0.5s)
 pin=() # ring_buffer_bench doesn't pin itself; orderbook_latency pins itself to core 2
@@ -144,9 +148,9 @@ for note in "${notes[@]}"; do echo "${note#- }"; done
 ((${#base_files[@]} > 0)) || skip "the base $base_label wrote no results this script can compare."
 
 set +e
-python3 "$root/bench/compare.py" "${base_files[@]}" --current "${head_files[@]}" "${thresholds[@]}"
+python3 "$root/bench/compare.py" "${base_files[@]}" --current "${head_files[@]}" "${thresholds[@]}" "${gates[@]}"
 rc=$?
-markdown="$(python3 "$root/bench/compare.py" "${base_files[@]}" --current "${head_files[@]}" "${thresholds[@]}" --markdown)"
+markdown="$(python3 "$root/bench/compare.py" "${base_files[@]}" --current "${head_files[@]}" "${thresholds[@]}" "${gates[@]}" --markdown)"
 set -e
 
 to_summary "## Benchmarks: base vs head" "" \

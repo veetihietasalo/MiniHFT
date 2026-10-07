@@ -7,7 +7,7 @@ orderbook_latency, itch_replay) and Google Benchmark JSON (ring_buffer_bench
 repeated runs. A directory stands for every *.json file in it.
 
     compare.py BASELINE... --current CURRENT... [--threshold PCT] [--threshold PATTERN=PCT]...
-               [--markdown] [--only-changes]
+               [--gate PATTERN]... [--markdown] [--only-changes]
 
 For each metric found on both sides: the median of each side's runs, and the change in %.
 A change counts only if
@@ -23,7 +23,14 @@ It still counts for the exit code.
 name (orderbook/old/*). The last matching pattern wins. Tails are noisier than medians:
     --threshold 'p99*=15' --threshold max=50
 
-Exit code: 0 no regression, 1 at least one regression, 2 bad input.
+--gate PATTERN limits the exit code to the metrics matching one of the patterns (matched like
+--threshold patterns). The other metrics are still compared and listed, as information. Without
+--gate every metric counts. Each metric gets its own verdict: over a hundred metrics, a 1-in-20
+chance of noise separating the runs turns into several false regressions per comparison. Gate on
+the central metrics and read the tails yourself:
+    --gate min --gate p50 --gate 'mean_per_*' --gate throughput
+
+Exit code: 0 no regression in a gated metric, 1 at least one, 2 bad input.
 """
 
 import argparse
@@ -94,6 +101,7 @@ class Row:
     cur: list
     threshold: float
     verdict: Verdict
+    gated: bool = True  # counts for the exit code (--gate)
 
     @property
     def display(self):
@@ -132,7 +140,12 @@ def judge(base, cur, better, threshold):
     return Verdict(verdict, delta, worse, confirmed)
 
 
-# --- thresholds -------------------------------------------------------------------------------
+# --- thresholds and gates ---------------------------------------------------------------------
+
+def matches(name, pattern):
+    """A pattern without '/' matches the last part of the name, one with '/' the whole name."""
+    return fnmatch.fnmatchcase(name if "/" in pattern else name.rsplit("/", 1)[-1], pattern)
+
 
 @dataclasses.dataclass
 class Thresholds:
@@ -141,9 +154,8 @@ class Thresholds:
 
     def for_metric(self, name):
         result = self.default
-        last = name.rsplit("/", 1)[-1]
         for pattern, pct in self.rules:
-            if fnmatch.fnmatchcase(name if "/" in pattern else last, pattern):
+            if matches(name, pattern):
                 result = pct
         return result
 
@@ -295,22 +307,25 @@ def collect(runs):
 
 
 def sort_key(row):
-    """Regressions first, worst first; then noise, worst first; then improvements, best first."""
+    """Gated regressions first, then the others, worst first; then noise, worst first; then
+    improvements, best first."""
     worse = 0.0 if math.isnan(row.verdict.worse) else row.verdict.worse
-    group = {REGRESSION: 0, NOISE: 1, IMPROVEMENT: 2}[row.verdict.verdict]
-    return (group, worse if group == 2 else -worse, row.display)
+    group = {REGRESSION: 0 if row.gated else 1, NOISE: 2, IMPROVEMENT: 3}[row.verdict.verdict]
+    return (group, worse if group == 3 else -worse, row.display)
 
 
-def compare(base_runs, cur_runs, thresholds):
-    """Rows for the metrics on both sides, sorted; plus the keys found on one side only."""
+def compare(base_runs, cur_runs, thresholds, gates=()):
+    """Rows for the metrics on both sides, sorted; plus the keys found on one side only.
+    With gates, only the metrics matching one of them count for the exit code."""
     base, cur = collect(base_runs), collect(cur_runs)
     rows = []
     for key in base.keys() & cur.keys():
         unit, better, base_values = base[key]
         cur_values = cur[key][2]
         threshold = thresholds.for_metric(key[1])
+        gated = not gates or any(matches(key[1], g) for g in gates)
         rows.append(Row(key[0], key[1], unit, better, base_values, cur_values, threshold,
-                        judge(base_values, cur_values, better, threshold)))
+                        judge(base_values, cur_values, better, threshold), gated))
     rows.sort(key=sort_key)
     return rows, sorted(base.keys() - cur.keys()), sorted(cur.keys() - base.keys())
 
@@ -380,16 +395,20 @@ def fmt_delta(delta):
     return f"{delta:+.1f}%"
 
 
-def verdict_text(v):
+def verdict_text(row):
+    v = row.verdict
     if v.verdict == NOISE:
         return "noise (overlap)" if v.reason == "ranges overlap" else "noise"
-    text = "REGRESSION" if v.verdict == REGRESSION else "improved"
+    if v.verdict == REGRESSION:
+        text = "REGRESSION" if row.gated else "slower (not gated)"
+    else:
+        text = "improved"
     return text if v.confirmed else text + " (unconfirmed)"
 
 
 def cells(row):
     return [row.display, row.unit, fmt_values(row.base), fmt_values(row.cur), fmt_delta(row.verdict.delta),
-            f"{row.threshold:g}%", f"{len(row.base)}/{len(row.cur)}", verdict_text(row.verdict)]
+            f"{row.threshold:g}%", f"{len(row.base)}/{len(row.cur)}", verdict_text(row)]
 
 
 HEADER = ["metric", "unit", "baseline", "current", "delta", "threshold", "runs", "verdict"]
@@ -406,8 +425,13 @@ def describe_side(runs):
 
 def counts_line(rows, only_base, only_cur):
     n = {k: sum(1 for r in rows if r.verdict.verdict == k) for k in (REGRESSION, IMPROVEMENT, NOISE)}
-    text = (f"{n[REGRESSION]} regression{'s' if n[REGRESSION] != 1 else ''}, "
-            f"{n[IMPROVEMENT]} improvement{'s' if n[IMPROVEMENT] != 1 else ''}, {n[NOISE]} within noise")
+    ungated = sum(1 for r in rows if r.verdict.verdict == REGRESSION and not r.gated)
+    gated = n[REGRESSION] - ungated
+    text = f"{gated} regression{'s' if gated != 1 else ''}"
+    if ungated:
+        text += f" ({ungated} more slower in metrics not gated)"
+    text += (f", {n[IMPROVEMENT]} improvement{'s' if n[IMPROVEMENT] != 1 else ''}, "
+             f"{n[NOISE]} within noise")
     if only_base or only_cur:
         text += f"; {len(only_base)} metrics only in the baseline, {len(only_cur)} only in the current"
     return text + "."
@@ -428,9 +452,15 @@ RULE = ("A change counts only if |delta| > threshold and the run ranges don't ov
         "(with 2+ runs per side).")
 
 
-def render_text(base_runs, cur_runs, thresholds, rows, only_base, only_cur, warnings, only_changes):
+def gate_text(gates):
+    return f"Gated (counts for the exit code): {', '.join(gates)}." if gates else ""
+
+
+def render_text(base_runs, cur_runs, thresholds, rows, only_base, only_cur, warnings, only_changes, gates=()):
     out = [f"Baseline: {describe_side(base_runs)}. Current: {describe_side(cur_runs)}.",
            f"Thresholds: {thresholds.describe()}. {RULE}"]
+    if gates:
+        out.append(gate_text(gates))
     out += [f"WARNING: {w}" for w in warnings]
     shown = [r for r in rows if r.verdict.verdict != NOISE] if only_changes else rows
     if shown:
@@ -462,16 +492,19 @@ def md_table(rows):
     for row in rows:
         c = cells(row)
         c[0] = f"`{c[0]}`"
-        if row.verdict.verdict == REGRESSION:
+        if row.verdict.verdict == REGRESSION and row.gated:
             c[-1] = f"**{c[-1]}**"
         out.append("| " + " | ".join(md_escape(x) for x in c) + " |")
     return out
 
 
-def render_markdown(base_runs, cur_runs, thresholds, rows, only_base, only_cur, warnings):
+def render_markdown(base_runs, cur_runs, thresholds, rows, only_base, only_cur, warnings, gates=()):
     out = ["### Benchmark comparison", "",
            f"Baseline: {md_escape(describe_side(base_runs))}. Current: {md_escape(describe_side(cur_runs))}.  ",
-           f"Thresholds: {md_escape(thresholds.describe())}. {RULE}", ""]
+           f"Thresholds: {md_escape(thresholds.describe())}. {RULE}" + ("  " if gates else "")]
+    if gates:
+        out.append(md_escape(gate_text(gates)))
+    out.append("")
     for w in warnings:
         out += [f"> **Warning:** {md_escape(w)}", ""]
     out += [f"**{counts_line(rows, only_base, only_cur)}**", ""]
@@ -498,6 +531,9 @@ def main(argv=None):
     parser.add_argument("--threshold", action="append", metavar="[PATTERN=]PCT",
                         help=f"change in %% that counts (default {DEFAULT_THRESHOLD:g}); with PATTERN, only for "
                              "matching metrics. Repeatable; the last matching pattern wins")
+    parser.add_argument("--gate", action="append", default=[], metavar="PATTERN",
+                        help="only metrics matching a PATTERN count for the exit code; the rest are listed as "
+                             "information. Repeatable. Default: every metric counts")
     parser.add_argument("--markdown", action="store_true", help="print Markdown, e.g. for a CI job summary")
     parser.add_argument("--only-changes", action="store_true", help="list only regressions and improvements")
     args = parser.parse_args(argv)
@@ -505,7 +541,7 @@ def main(argv=None):
     try:
         thresholds = parse_thresholds(args.threshold)
         base_runs, cur_runs = load_side(args.baseline), load_side(args.current)
-        rows, only_base, only_cur = compare(base_runs, cur_runs, thresholds)
+        rows, only_base, only_cur = compare(base_runs, cur_runs, thresholds, args.gate)
         if not rows:
             raise InputError("the baseline and the current have no metric in common")
     except InputError as e:
@@ -514,11 +550,12 @@ def main(argv=None):
 
     warnings = metadata_warnings(base_runs, cur_runs)
     if args.markdown:
-        sys.stdout.write(render_markdown(base_runs, cur_runs, thresholds, rows, only_base, only_cur, warnings))
+        sys.stdout.write(render_markdown(base_runs, cur_runs, thresholds, rows, only_base, only_cur, warnings,
+                                         args.gate))
     else:
         sys.stdout.write(render_text(base_runs, cur_runs, thresholds, rows, only_base, only_cur, warnings,
-                                     args.only_changes))
-    return 1 if any(r.verdict.verdict == REGRESSION for r in rows) else 0
+                                     args.only_changes, args.gate))
+    return 1 if any(r.verdict.verdict == REGRESSION and r.gated for r in rows) else 0
 
 
 if __name__ == "__main__":

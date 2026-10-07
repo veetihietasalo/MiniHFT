@@ -46,6 +46,9 @@ $baselineDir = Join-Path $root "build\bench-baseline"
 # between runs than the median does.
 $thresholds = @("--threshold", "5", "--threshold", "p99=15", "--threshold", "p99.9=30",
                 "--threshold", "p99.99=50", "--threshold", "max=100")
+# Only the central metrics fail the check; the tails are listed for reading. Every metric gets its
+# own verdict, so across a hundred-odd metrics noise alone would fail some check every run.
+$gates = @("--gate", "min", "--gate", "p50", "--gate", "mean_per_*", "--gate", "throughput", "--gate", "ns_per_msg")
 
 if ([IntPtr]::Size -ne 8) { throw "Run this from 64-bit PowerShell." }
 if ($SaveBaseline -and $Check) { throw "-SaveBaseline and -Check exclude each other." }
@@ -228,7 +231,7 @@ if ($SaveBaseline) {
 if ($Check) {
     Log ""
     Log "## compared with the baseline in $baselineDir"
-    & $python (Join-Path $root "bench\compare.py") $baselineDir --current $jsonDir @thresholds 2>&1 |
+    & $python (Join-Path $root "bench\compare.py") $baselineDir --current $jsonDir @thresholds @gates 2>&1 |
         ForEach-Object { Log ([string]$_) }
     exit $LASTEXITCODE
 }

@@ -282,6 +282,36 @@ class FilesTest(unittest.TestCase):
         self.assertIn("loud/p50", out)
         self.assertNotIn("quiet/p50", out)
 
+    def test_gate_limits_the_exit_code_to_matching_metrics(self):
+        def files(prefix, tail, center):
+            return [self.write(f"{prefix}{i}.json", minihft_doc({"ob/take/p99.99": t, "ob/mean_per_event": c}))
+                    for i, (t, c) in enumerate(zip(tail, center))]
+        b = files("b", (500.0, 520.0, 510.0), (18.0, 18.2, 18.1))
+        tail_only = files("t", (2000.0, 2100.0, 2050.0), (18.1, 18.0, 18.3))  # the tail jumps, the mean doesn't
+        center = files("c", (510.0, 500.0, 515.0), (30.0, 30.5, 29.8))
+        gate = ("--gate", "mean_per_*", "--gate", "p50")
+        code, out, _ = self.run_main(*b, "--current", *tail_only, *gate)
+        self.assertEqual(code, 0)
+        self.assertIn("slower (not gated)", out)
+        self.assertIn("0 regressions (1 more slower in metrics not gated)", out)
+        self.assertIn("Gated (counts for the exit code): mean_per_*, p50.", out)
+        code, out, _ = self.run_main(*b, "--current", *center, *gate)
+        self.assertEqual(code, 1)
+        self.assertIn("REGRESSION", out)
+        self.assertEqual(self.run_main(*b, "--current", *tail_only)[0], 1)  # without --gate everything counts
+
+    def test_gated_regressions_sort_before_ungated_ones(self):
+        r = compare.Row("", "m/max", "ns", LOWER, [1.0], [9.0], 5.0, judge([1.0], [9.0], LOWER, 5.0), gated=False)
+        g = compare.Row("", "m/p50", "ns", LOWER, [1.0], [1.5], 5.0, judge([1.0], [1.5], LOWER, 5.0), gated=True)
+        self.assertEqual(sorted([r, g], key=compare.sort_key), [g, r])
+
+    def test_markdown_bolds_only_gated_regressions(self):
+        b = self.write("b.json", minihft_doc({"m/p50": 20.0, "m/max": 100.0}))
+        c = self.write("c.json", minihft_doc({"m/p50": 30.0, "m/max": 900.0}))
+        _, out, _ = self.run_main(b, "--current", c, "--markdown", "--gate", "p50")
+        self.assertIn("**REGRESSION (unconfirmed)**", out)
+        self.assertIn("| slower (not gated) (unconfirmed) |", out)
+
     def test_bad_input_exits_2(self):
         b = self.write("b.json", minihft_doc({"m/p50": 20.0}))
         c = self.write("c.json", minihft_doc({"other/p50": 20.0}))

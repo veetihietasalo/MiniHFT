@@ -50,6 +50,9 @@ baseline_dir="$root/build/bench-baseline"
 # --check thresholds in %: the tail is set by the OS more than by the code, and varies far more
 # between runs than the median does.
 thresholds=(--threshold 5 --threshold 'p99=15' --threshold 'p99.9=30' --threshold 'p99.99=50' --threshold 'max=100')
+# Only the central metrics fail the check; the tails are listed for reading. Every metric gets its
+# own verdict, so across a hundred-odd metrics noise alone would fail some check every run.
+gates=(--gate min --gate p50 --gate 'mean_per_*' --gate throughput --gate ns_per_msg)
 if ((check)); then
     if ! compgen -G "$baseline_dir/*.json" > /dev/null; then
         echo "no baseline in $baseline_dir: save one first with --save-baseline" >&2
@@ -254,7 +257,7 @@ fi
 if ((check)); then
     log "" "## compared with the baseline in $baseline_dir"
     set +e
-    python3 "$root/bench/compare.py" "$baseline_dir" --current "$json_dir" "${thresholds[@]}" 2>&1 | tee -a "$log_file"
+    python3 "$root/bench/compare.py" "$baseline_dir" --current "$json_dir" "${thresholds[@]}" "${gates[@]}" 2>&1 | tee -a "$log_file"
     rc=${PIPESTATUS[0]}
     set -e
     exit "$rc"
