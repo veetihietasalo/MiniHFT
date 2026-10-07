@@ -225,9 +225,10 @@ namespace itch {
     //
     // Returns false, calling nothing, if `message` isn't exactly as long as its type requires
     // (or its type is unknown). The decoders read fixed offsets, so a short message would be
-    // read past its end.
+    // read past its end. A caller that knows every message is well formed (ItchReader only
+    // returns those) says so with a (void) cast.
     template <ItchHandler Handler>
-    bool dispatch(std::span<const uint8_t> message, Handler& h) {
+    [[nodiscard]] bool dispatch(std::span<const uint8_t> message, Handler& h) {
         if (message.empty() || message.size() != messageLength(char(message[0]))) return false;
         const uint8_t* m = message.data();
         const uint16_t locate = be16(m + 1);

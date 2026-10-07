@@ -127,14 +127,14 @@ int replay(Builder& builder, std::FILE* file, bool timeEach, const std::vector<s
         LatencyHistogram* h = latencies->forType(char(m[0]));
         if (timeEach && h) {
             const uint64_t t0 = Tsc::read();
-            itch::dispatch(m, builder);
+            (void)itch::dispatch(m, builder); // the reader only returns well-formed messages
             const uint64_t t1 = Tsc::readOrdered();
             h->record(t1 - t0);
             latencies->all.record(t1 - t0);
             bookTicks += t1 - t0;
             ++bookMessages;
         } else {
-            itch::dispatch(m, builder);
+            (void)itch::dispatch(m, builder);
         }
     }
     const double seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - wallStart).count();

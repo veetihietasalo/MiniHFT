@@ -16,7 +16,7 @@
 // grow. The pool doesn't destroy objects that are still acquired when it is destroyed.
 template <typename T, size_t BlockSize = 4096>
 class ObjectPool {
-    static_assert(BlockSize > 0);
+    static_assert(BlockSize > 0, "BlockSize must be at least 1");
 
     struct FreeSlot {
         FreeSlot* next;

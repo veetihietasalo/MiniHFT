@@ -13,7 +13,7 @@
 
 template <typename T, size_t Size>
 class RelaxedPublishRingBuffer {
-    static_assert((Size & (Size - 1)) == 0, "Size must be power of 2");
+    static_assert(Size > 0 && (Size & (Size - 1)) == 0, "Size must be power of 2");
 
     alignas(CACHE_LINE_SIZE) std::atomic<size_t> head{0};
     alignas(CACHE_LINE_SIZE) std::atomic<size_t> tail{0};
