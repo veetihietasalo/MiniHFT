@@ -47,6 +47,11 @@ else()
         $<$<NOT:$<STREQUAL:$<TARGET_PROPERTY:NAME>,minihft_tests>>:-Wnull-dereference>)
     if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
         target_compile_options(minihft_core INTERFACE -Wduplicated-cond -Wlogical-op)
+        # GCC on AArch64 notes that passing std::pair<double, double> changed ABI in GCC 10.1.
+        # Everything here is built by one compiler, so the note is noise.
+        if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64)$")
+            target_compile_options(minihft_core INTERFACE -Wno-psabi)
+        endif()
     endif()
     if(MINIHFT_WARNINGS_AS_ERRORS)
         target_compile_options(minihft_core INTERFACE -Werror)

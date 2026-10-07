@@ -6,21 +6,27 @@
 //     visible before an earlier one, so the missing release goes unnoticed. ARM gives no such
 //     guarantee. See docs/memory_ordering.md.
 //
-// Usage: relaxed_publish_demo [messages=1000000]
+// Usage: relaxed_publish_demo [messages=1000000] [release]
+//   release: run the same queue with publish() a release (RingV0FetchAdd), as a control.
 
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 
+#include "../bench/RingVariants.hpp"
 #include "RelaxedPublishRingBuffer.hpp"
 #include "SpscStress.hpp"
 
 int main(int argc, char** argv) {
     const uint64_t count = argc > 1 ? std::strtoull(argv[1], nullptr, 10) : 1'000'000;
-    const StressResult r = runSpscStress<RelaxedPublishRingBuffer<StressMessage, 1024>>(count);
+    const bool control = argc > 2 && std::strcmp(argv[2], "release") == 0;
+    const StressResult r = control ? runSpscStress<RingV0FetchAdd<StressMessage, 1024>>(count)
+                                   : runSpscStress<RelaxedPublishRingBuffer<StressMessage, 1024>>(count);
 
-    std::printf("relaxed publish: %llu messages, %llu bad sequence, %llu bad payload, %llu bad checksum\n",
-                static_cast<unsigned long long>(r.received), static_cast<unsigned long long>(r.badSequence),
-                static_cast<unsigned long long>(r.badPayload), static_cast<unsigned long long>(r.badChecksum));
+    std::printf("%s publish: %llu messages, %llu bad sequence, %llu bad payload, %llu bad checksum\n",
+                control ? "release" : "relaxed", static_cast<unsigned long long>(r.received),
+                static_cast<unsigned long long>(r.badSequence), static_cast<unsigned long long>(r.badPayload),
+                static_cast<unsigned long long>(r.badChecksum));
     return r.clean() ? 0 : 1;
 }

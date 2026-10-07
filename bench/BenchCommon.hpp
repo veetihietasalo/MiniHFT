@@ -10,15 +10,23 @@
 #include <thread>
 #include <vector>
 
+#if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
+#define MINIHFT_BENCH_X86 1
 #if defined(_MSC_VER)
 #include <intrin.h>
 #else
 #include <cpuid.h>
 #endif
+#else
+#include <fstream>
+#endif
 
 #include "LatencyHistogram.hpp"
+#include "Tsc.hpp"
 
 namespace bench {
+
+#if defined(MINIHFT_BENCH_X86)
 
     inline std::string cpuBrand() {
         unsigned int regs[12] = {};
@@ -38,6 +46,37 @@ namespace bench {
         brand.erase(brand.find_last_not_of(' ') + 1);
         return brand;
     }
+
+#else
+
+    // No CPUID: /proc/cpuinfo names the core by implementer and part number (MIDR_EL1) on
+    // AArch64 Linux, with a "model name" line only on some kernels. Elsewhere, "unknown".
+    inline std::string cpuBrand() {
+        std::ifstream cpuinfo("/proc/cpuinfo");
+        std::string line;
+        std::string implementer;
+        std::string part;
+        auto value = [&] {
+            const size_t start = line.find_first_not_of(" \t", line.find(':') + 1);
+            return start == std::string::npos ? std::string() : line.substr(start);
+        };
+        while (std::getline(cpuinfo, line) && line.find(':') != std::string::npos) { // first CPU only
+            if (line.rfind("model name", 0) == 0) return value();
+            if (line.rfind("CPU implementer", 0) == 0) implementer = value();
+            if (line.rfind("CPU part", 0) == 0) part = value();
+        }
+        if (implementer.empty() || part.empty()) return "unknown";
+        if (implementer == "0x41") { // Arm Ltd: the cores in Graviton, Cobalt, Axion, Grace
+            struct Core { const char* part; const char* name; };
+            for (const Core c : {Core{"0xd0c", "Neoverse N1"}, Core{"0xd40", "Neoverse V1"}, Core{"0xd49", "Neoverse N2"},
+                                 Core{"0xd4f", "Neoverse V2"}, Core{"0xd84", "Neoverse V3"}, Core{"0xd8e", "Neoverse N3"}}) {
+                if (part == c.part) return std::string("Arm ") + c.name;
+            }
+        }
+        return "implementer " + implementer + " part " + part;
+    }
+
+#endif
 
     inline std::string compilerName() {
 #if defined(__clang__)
@@ -72,8 +111,11 @@ namespace bench {
     inline void printMachine(double ticksPerNs, uint64_t overheadTicks) {
         std::printf("  cpu       %s (%u logical CPUs visible)\n", cpuBrand().c_str(), std::thread::hardware_concurrency());
         std::printf("  platform  %s, %s, %s build\n", osName(), compilerName().c_str(), buildType());
-        std::printf("  tsc       %.3f ticks/ns, timer overhead %.1f ns (subtract from small values)\n",
-                    ticksPerNs, static_cast<double>(overheadTicks) / ticksPerNs);
+        std::printf("  %-9s %.3f ticks/ns, timer overhead %.1f ns (subtract from small values)\n",
+                    Tsc::kCounterName, ticksPerNs, static_cast<double>(overheadTicks) / ticksPerNs);
+        if (ticksPerNs < 1.0) { // e.g. a 25 MHz CNTVCT_EL0: every latency below is a multiple of this
+            std::printf("  counter   one tick is %.1f ns, so latencies are quantized to that\n", 1.0 / ticksPerNs);
+        }
     }
 
     // --name=value, or `fallback` when absent.

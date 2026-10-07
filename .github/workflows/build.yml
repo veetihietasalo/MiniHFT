@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   build:
-    name: ${{ matrix.preset }}
+    name: ${{ matrix.name || matrix.preset }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -20,6 +20,10 @@ jobs:
           - { os: ubuntu-24.04, preset: gcc-release }
           - { os: ubuntu-24.04, preset: clang-tsan }
           - { os: ubuntu-24.04, preset: clang-asan-ubsan }
+          # AArch64 is weakly ordered: the SPSC stress tests run against real store reordering
+          # there, which x86 never does (docs/memory_ordering.md).
+          - { os: ubuntu-24.04-arm, preset: gcc-release, name: gcc-release (arm64) }
+          - { os: ubuntu-24.04-arm, preset: clang-tsan, name: clang-tsan (arm64) }
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -42,6 +46,20 @@ jobs:
 
       - name: Test
         run: ctest --preset ${{ matrix.preset }}
+
+      # TEMPORARY: measure the deliberately broken queue on real weak-memory hardware.
+      - name: Relaxed-publish experiment
+        if: matrix.os == 'ubuntu-24.04-arm' && matrix.preset == 'gcc-release'
+        shell: bash
+        run: |
+          lscpu
+          grep -m1 -B1 -A9 '^BogoMIPS' /proc/cpuinfo || true
+          demo=build/gcc-release/relaxed_publish_demo
+          objdump -d --no-show-raw-insn -C "$demo" | grep -B6 -A3 'ldadd8_relax>$' | head -40 || true
+          for run in 1 2 3; do time timeout 600 "$demo" 100000000 || true; done
+          time timeout 600 "$demo" 100000000 release || true
+          clang++ -std=c++20 -O2 -Iinclude -Itests tests/relaxed_publish_demo.cpp -pthread -o demo-clang
+          for run in 1 2 3; do time timeout 600 ./demo-clang 100000000 || true; done
 
   # Coverage-guided fuzzing of the ITCH reader and dispatch, under ASan and UBSan.
   fuzz:
