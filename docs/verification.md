@@ -7,7 +7,7 @@ Most of MiniHFT is written with an AI assistant. An AI is reliable in some areas
 | Syntax, idioms, standard library | Rarely | Warnings as errors on three compilers, clang-tidy, and every header compiling on its own | CI ([code_quality.md](code_quality.md)) |
 | Templates, concepts, overload resolution | A confident claim such as "this concept rejects X" that isn't true | [Compile-fail tests](#compile-fail-tests) | CI, every build without a sanitizer |
 | Lifetimes, aliasing, undefined behaviour | Code that follows the rules on paper and breaks them in real use | AddressSanitizer + UndefinedBehaviorSanitizer, fuzzing | CI ([code_quality.md](code_quality.md)) |
-| Memory ordering, lock-free code | Plausible but wrong orderings. On x86 these often compile to the same instructions as the right ones. | ThreadSanitizer, including a test that passes only if it catches a deliberately broken queue | CI ([memory_ordering.md](memory_ordering.md)) |
+| Memory ordering, lock-free code | Plausible but wrong orderings. On x86 these often compile to the same instructions as the right ones. | [ThreadSanitizer on every threaded path](#memory-ordering-every-threaded-path-more-schedules), SPSC stress under three thread schedules, and two tests that pass only if TSan catches a deliberately broken queue | CI ([memory_ordering.md](memory_ordering.md)) |
 | Performance claims | Reasoning about caches and branches without measuring | [Benchmark baselines](#benchmark-baselines): JSON results, `compare.py`, saved baselines, and an A/B job in CI | The benchmark machine; CI only reports |
 
 ## Compile-fail tests
@@ -52,6 +52,61 @@ minihft_compile_fail_test(NAME RingBufferRejectsSizeZero
 ```
 
 Add `WARNING` for a misuse that only fails because of warnings-as-errors, such as an ignored `[[nodiscard]]` result. Those tests exist only when `MINIHFT_WARNINGS_AS_ERRORS` is on, which every preset sets. To run just this group: `ctest --preset gcc-release -L compile-fail`.
+
+## Memory ordering: every threaded path, more schedules
+
+ThreadSanitizer already ran the unit tests, and `TSan.CatchesRelaxedPublish` proved it catches a relaxed `publish()` ([memory_ordering.md](memory_ordering.md)). Two gaps were left:
+
+- **Threaded code that never ran under TSan.** The two-thread harness behind `ring_latency` and `ring_study` ([`bench/RingHarness.hpp`](../bench/RingHarness.hpp)) has its own `std::atomic<bool>` handshake, and both threads write a shared result struct. The harness programs were built in the TSan preset but never run.
+- **One schedule.** TSan only checks the interleavings that actually happen, and the stress test had one way of waiting: yield when the queue is full or empty.
+
+### What runs now
+
+[`cmake/SanitizerSmokeTests.cmake`](../cmake/SanitizerSmokeTests.cmake) adds three groups:
+
+| Tests | Builds | What they do |
+|-------|--------|--------------|
+| `Stress.<queue>.<tight\|random>`, 22 | every build, label `stress` | Every SPSC hand-off runs 100,000 messages under two schedules. **Tight** busy-spins on a full or empty queue. **Random** inserts seeded random spins, yields and rare stalls of up to 2 ms between every step, on both sides. The hand-offs: `RingBuffer`, the three W03 variants, `RingV2` batched and with both indices on one cache line, and `KernelBypass`. Each queue also runs at 2 or 4 slots, where wrap-around and the full and empty edges come every few messages. Each run picks a seed and prints it, so a failure can be replayed with [`spsc_stress`](../tests/spsc_stress.cpp). |
+| `TSan.CatchesRelaxedConsume` | TSan | Passes only if TSan reports the race in a queue whose `consume()` is relaxed ([`tests/RelaxedConsumeRingBuffer.hpp`](../tests/RelaxedConsumeRingBuffer.hpp)), next to the existing relaxed-`publish()` test |
+| `Smoke.<program>`, 12 | sanitizer builds, label `smoke` | Every program with small inputs: `ring_latency` (paced, burst, and with a core that doesn't exist, so a failed pin must still pass), `ring_study` with and without busy work, `ring_bench`, `orderbook_latency`, `gen_itch` → `itch_test` and `itch_replay`, `MiniHFT`, `hw_bench` |
+
+The 22 stress tests take 7 s under TSan. The `clang-tsan` CI job also repeats them 10 times, each repeat with new seeds: 220 runs, 33 s locally.
+
+Every file with an atomic or a thread now has its threads run under TSan:
+
+| Code | What exercises it |
+|------|-------------------|
+| `include/RingBuffer.hpp` | `RingBuffer.SpscStress*`, `Stress.ring*`, `Smoke.ring_latency.*`, `Smoke.ring_study*`, `Smoke.ring_bench` |
+| `bench/RingVariants.hpp` | `RingVariantTest/*`, `Stress.v0*`, `Stress.v1*`, `Stress.v2*`, `Smoke.ring_study*` (all eight variants) |
+| `bench/RingHarness.hpp` | `Smoke.ring_latency.*`, `Smoke.ring_study*` |
+| `include/KernelBypass.hpp` | `KernelBypass.TwoThreadsDeliverEveryPacketInOrder`, `Stress.kernel-bypass.*` |
+| `include/ThreadUtils.hpp` | `ThreadUtils.*`; both threads pinning at once in every ring smoke test, and both reporting a failed pin at once in `Smoke.ring_latency.unpinned` |
+
+`include/Network.hpp` and `src/net_test.cpp` are Windows-only, so they aren't covered. No correct queue showed a problem under any schedule.
+
+### What each piece adds: three broken queues
+
+Three deliberately broken queues, measured with Clang 18:
+- `publish()` relaxed;
+- `consume()` relaxed;
+- `claim()` off by one. It has the right orderings, but `>` instead of `>=` lets it accept 1,025 messages into 1,024 slots, so it races only when the queue is full.
+
+| Broken queue | Release build, no TSan (200,000 messages, random schedule) | ThreadSanitizer |
+|--------------|-----------------------------------------------------------:|-----------------|
+| `publish()` relaxed | 0 of 10 runs damaged | Reported in every run, under every schedule |
+| `consume()` relaxed | 0 of 10 runs damaged | 0 of 10 up to 1,024 messages in 1,024 slots, 10 of 10 from 1,025. With 2 slots: 0 of 10 at 2 messages, 10 of 10 at 3 |
+| `claim()` off by one | 10 of 10 runs damaged | 5,000 messages: 4 of 20 runs with the tight schedule, **14 of 20 with the random one** |
+
+What that shows:
+- **The schedules don't help with missing orderings, but the tiny rings do.** No interleaving supplies the missing happens-before edge, so TSan reports it in every run, as soon as the racing accesses happen. For a relaxed `consume()`, that means the producer reusing a slot the consumer has read: message 1,025 in a 1,024-slot ring, message 3 in a 2-slot ring. On x86, neither bug damaged a single message without TSan.
+- **The random schedule helps with bugs that depend on timing.** It took TSan's catch rate for the off-by-one from 20% to 70% at 5,000 messages. The stress test's own checks catch that bug in a release build anyway, because it really overwrites messages.
+
+### What TSan still can't see
+
+- **Fences.** TSan doesn't model `std::atomic_thread_fence`. Correct fence-based code would be reported as a race, and TSan couldn't tell a right fence from a wrong one. Nothing in the code uses a fence today; keep it that way, or add a different check along with the fence.
+- **Ordering between atomics only.** A sleep/wake handshake that needs `seq_cst` but uses acquire/release, or a seqlock, can be wrong with no plain-memory race for TSan to report. No such protocol exists here yet. A memory-model checker would be needed for one.
+- **Weakly ordered hardware.** Everything above ran on x86. Running the stress tests on ARM, where the hardware really does reorder, would be the strongest check for this area. `Tsc.hpp` has to be ported first.
+- **Executions that don't happen,** as the off-by-one shows: 14 of 20 is not 20 of 20.
 
 ## Benchmark baselines
 

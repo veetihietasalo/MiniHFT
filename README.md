@@ -256,7 +256,7 @@ This project demonstrates skills relevant to:
 - [The L3 Order Book](docs/order_book.md) - Design, bugs fixed in the old ITCH code, old vs new, and a full NASDAQ day replayed
 - [Zero-Overhead Extension Points](docs/zero_overhead.md) - Concepts for handlers and listeners, template vs virtual listener cost, the generated assembly, and zero-allocation tests
 - [Code Quality](docs/code_quality.md) - Six bugs proven by failing tests and then fixed, hardened APIs, sanitizers, fuzzing, clang-tidy, and what CI checks
-- [Verification](docs/verification.md) - A check for each area where AI-written C++ goes wrong: compile-fail tests for concepts and `static_assert`s, and benchmark baselines with a regression gate, shown catching a real 50 ns regression
+- [Verification](docs/verification.md) - A check for each area where AI-written C++ goes wrong: compile-fail tests for concepts and `static_assert`s, TSan on every threaded path with SPSC stress under three schedules, and benchmark baselines with a regression gate, shown catching a real 50 ns regression
 - [Hard Mode Walkthrough](docs/hard_mode_walkthrough.md) - Advanced concepts
 - [Learning Roadmap](learning_roadmap.md) - Structured learning path
 

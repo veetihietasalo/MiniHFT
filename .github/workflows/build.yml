@@ -43,6 +43,11 @@ jobs:
       - name: Test
         run: ctest --preset ${{ matrix.preset }}
 
+      # More schedules for the lock-free code: each repeat picks new seeds, and a failure prints its seed.
+      - name: Stress the lock-free code (10 repeats)
+        if: matrix.preset == 'clang-tsan'
+        run: ctest --preset clang-tsan -L stress --repeat until-fail:10
+
   # Coverage-guided fuzzing of the ITCH reader and dispatch, under ASan and UBSan.
   fuzz:
     name: fuzz (itch_fuzz, 60 s)

@@ -88,10 +88,10 @@ CI uses Ubuntu 24.04's clang-tidy 18. A check newer than that (`misc-use-interna
 
 | Job | What must hold |
 |-----|----------------|
-| `msvc-release` | MSVC `/W4 /WX` build; 105 tests: 77 unit tests, 27 [compile-fail tests](verification.md#compile-fail-tests) and `compare.py`'s tests |
-| `gcc-release` | GCC strict warnings with `-Werror`; the same 105 tests |
-| `clang-tsan` | ThreadSanitizer; 71 tests (no compile-fail tests under a sanitizer) |
-| `clang-asan-ubsan` | AddressSanitizer + UndefinedBehaviorSanitizer; 70 tests |
+| `msvc-release` | MSVC `/W4 /WX` build; 127 tests: 77 unit tests, 27 [compile-fail tests](verification.md#compile-fail-tests), 22 [SPSC stress tests](verification.md#memory-ordering-every-threaded-path-more-schedules) and `compare.py`'s tests |
+| `gcc-release` | GCC strict warnings with `-Werror`; the same 127 tests |
+| `clang-tsan` | ThreadSanitizer; 106 tests (no compile-fail tests under a sanitizer; adds the 12 program smoke tests and `TSan.CatchesRelaxedConsume`), then the 22 stress tests 10 more times with new seeds |
+| `clang-asan-ubsan` | AddressSanitizer + UndefinedBehaviorSanitizer; 104 tests |
 | `fuzz` | 60 s of libFuzzer without a crash, starting from the saved inputs and `gen_itch`'s sample feed |
 | `clang-tidy` | 0 findings |
 | `bench-compare` | Report only: benchmarks the merge-base and the head on the same runner and writes the comparison to the job summary ([verification.md](verification.md#benchmark-baselines)). A regression raises a warning, never a failure. |

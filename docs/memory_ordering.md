@@ -56,14 +56,14 @@ The ThreadSanitizer report, trimmed:
 ```text
 WARNING: ThreadSanitizer: data race
   Read of size 8 at 0x72c400014080 by main thread:
-    #0 runSpscStress<RelaxedPublishRingBuffer<StressMessage, 1024>>  tests/SpscStress.hpp:62   <- consumer copies the slot
+    #0 runSpscStress<RelaxedPublishRingBuffer<StressMessage, 1024>>  tests/SpscStress.hpp:141  <- consumer copies the slot
   Previous write of size 8 at 0x72c400014080 by thread T1:
-    #0 runSpscStress<...>::lambda                                    tests/SpscStress.hpp:52   <- producer writes slot->seq
+    #0 runSpscStress<...>::lambda                                    tests/SpscStress.hpp:126  <- producer writes slot->seq
   Location is heap block of size 65664 allocated by main thread      (the queue itself)
-SUMMARY: ThreadSanitizer: data race tests/SpscStress.hpp:62:39
+SUMMARY: ThreadSanitizer: data race tests/SpscStress.hpp:141:39
 ```
 
-ThreadSanitizer doesn't wait for the reordering to happen. It tracks happens-before, and here it sees the producer write a slot and the consumer read it with no happens-before edge between them. That's why it finds a bug that ten million messages of stress testing on x86 cannot. CI runs this as `TSan.CatchesRelaxedPublish`, a test that passes only if ThreadSanitizer reports the race.
+ThreadSanitizer doesn't wait for the reordering to happen. It tracks happens-before, and here it sees the producer write a slot and the consumer read it with no happens-before edge between them. That's why it finds a bug that ten million messages of stress testing on x86 cannot. CI runs this as `TSan.CatchesRelaxedPublish`, a test that passes only if ThreadSanitizer reports the race. `TSan.CatchesRelaxedConsume` does the same for a relaxed `consume()`. TSan catches that one only once the producer reuses a slot the consumer has read, so the test uses a 2-slot queue. [verification.md](verification.md#memory-ordering-every-threaded-path-more-schedules) has the detection rates, and what TSan can't see.
 
 ## Why x86 hides the bug
 
