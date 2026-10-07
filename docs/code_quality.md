@@ -46,9 +46,9 @@ One exception remains: the test binary is built without `-Wnull-dereference`. GC
 
 | Preset | Checks | Tests |
 |--------|--------|------:|
-| `clang-asan-ubsan` | AddressSanitizer + UndefinedBehaviorSanitizer, plus `float-divide-by-zero`, `local-bounds`, `implicit-conversion` and `nullability` ([why, and why not `unsigned-integer-overflow`](verification.md#lifetimes-and-undefined-behaviour-the-gaps-asan-leaves)); leak detection, stack-use-after-return and initialization-order checks on | 104 |
-| `clang-tsan` | ThreadSanitizer, including the tests that pass only if TSan reports a deliberately broken queue | 106 |
-| `gcc-debug-stl` | Not a sanitizer, but in the same spirit: libstdc++ debug mode catches invalidated iterators and out-of-range indexing that ASan can't see | 128 |
+| `clang-asan-ubsan` | AddressSanitizer + UndefinedBehaviorSanitizer, plus `float-divide-by-zero`, `local-bounds`, `implicit-conversion` and `nullability` ([why, and why not `unsigned-integer-overflow`](verification.md#lifetimes-and-undefined-behaviour-the-gaps-asan-leaves)); leak detection, stack-use-after-return and initialization-order checks on | 109 |
+| `clang-tsan` | ThreadSanitizer, including the tests that pass only if TSan reports a deliberately broken queue | 111 |
+| `gcc-debug-stl` | Not a sanitizer, but in the same spirit: libstdc++ debug mode catches invalidated iterators and out-of-range indexing that ASan can't see | 133 |
 
 Both build with `-fno-sanitize-recover=all`, so the first report ends the run and a test can't pass after one. Sanitizer runtimes replace global `operator new`, and so do the zero-allocation tests, so those 8 tests only run in the other builds.
 
@@ -89,11 +89,13 @@ CI uses Ubuntu 24.04's clang-tidy 18. A check newer than that (`misc-use-interna
 
 | Job | What must hold |
 |-----|----------------|
-| `msvc-release` | MSVC `/W4 /WX` build; 128 tests: 77 unit tests, 28 [compile-fail tests](verification.md#compile-fail-tests), 22 [SPSC stress tests](verification.md#memory-ordering-every-threaded-path-more-schedules) and `compare.py`'s tests |
-| `gcc-release` | GCC strict warnings with `-Werror`; the same 128 tests |
-| `gcc-debug-stl` | The same 128 tests under libstdc++ debug mode |
-| `clang-tsan` | ThreadSanitizer; 106 tests (no compile-fail tests under a sanitizer; adds the 12 program smoke tests and `TSan.CatchesRelaxedConsume`), then the 22 stress tests 10 more times with new seeds |
-| `clang-asan-ubsan` | AddressSanitizer + UndefinedBehaviorSanitizer; 104 tests |
+| `msvc-release` | MSVC `/W4 /WX` build; 133 tests: 82 unit tests, 28 [compile-fail tests](verification.md#compile-fail-tests), 22 [SPSC stress tests](verification.md#memory-ordering-every-threaded-path-more-schedules) and `compare.py`'s tests |
+| `gcc-release` | GCC strict warnings with `-Werror`; the same 133 tests |
+| `gcc-debug-stl` | The same 133 tests under libstdc++ debug mode |
+| `clang-tsan` | ThreadSanitizer; 111 tests (no compile-fail tests under a sanitizer; adds the 12 program smoke tests and `TSan.CatchesRelaxedConsume`), then the 22 stress tests 10 more times with new seeds |
+| `clang-asan-ubsan` | AddressSanitizer + UndefinedBehaviorSanitizer; 109 tests |
+| `gcc-release (arm64)` | The same build on AArch64 (Arm Neoverse N2), where stores really are reordered; 134 tests, including one that passes only if the broken queue delivers damaged messages ([memory_ordering.md](memory_ordering.md#measured-on-arm)) |
+| `clang-tsan (arm64)` | ThreadSanitizer on AArch64; 111 tests, then the same 10 stress repeats |
 | `fuzz` | 60 s of libFuzzer without a crash, starting from the saved inputs and `gen_itch`'s sample feed |
 | `clang-tidy` | 0 findings, Clang Static Analyzer included |
 | `bench-compare` | Report only: benchmarks the merge-base and the head on the same runner and writes the comparison to the job summary ([verification.md](verification.md#benchmark-baselines)). A regression raises a warning, never a failure. |

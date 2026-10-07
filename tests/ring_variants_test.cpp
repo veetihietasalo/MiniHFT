@@ -18,11 +18,18 @@ using Variants = ::testing::Types<
     RingV2<StressMessage, 1024, 1, false>, // false sharing: slower, still correct
     RingV2<StressMessage, 1024, 4>,
     RingV2<StressMessage, 1024, 64>,
+    // 8 slots: every slot changes hands every few messages. On ARM that's where a missing release
+    // shows up; with 1024 slots it rarely does (docs/memory_ordering.md).
+    RingV0FetchAdd<StressMessage, 8>,
+    RingV1Store<StressMessage, 8>,
+    RingV2<StressMessage, 8>,
+    RingV2<StressMessage, 8, 1, false>,
+    RingV2<StressMessage, 8, 4>,
     RingV2<StressMessage, 8, 8>>;          // batch == size: the tightest legal batching
 TYPED_TEST_SUITE(RingVariantTest, Variants);
 
 TYPED_TEST(RingVariantTest, DeliversEveryMessageIntactAndInOrder) {
-    constexpr uint64_t kCount = 100'003; // not a multiple of any batch size: flush() must publish the tail end
+    constexpr uint64_t kCount = stressCount(100'000) + 3; // not a multiple of any batch size: flush() must publish the tail end
     const StressResult r = runSpscStress<TypeParam>(kCount);
     EXPECT_EQ(r.received, kCount);
     EXPECT_TRUE(r.clean()) << r.badSequence << " bad sequence, " << r.badPayload << " bad payload, "

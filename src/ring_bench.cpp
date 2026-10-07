@@ -4,12 +4,7 @@
 
 #include "RingBuffer.hpp"
 #include "ThreadUtils.hpp"
-
-#if defined(_MSC_VER)
-#include <intrin.h>     // __rdtsc
-#else
-#include <x86intrin.h>  // __rdtsc
-#endif
+#include "Tsc.hpp"
 
 namespace {
 
@@ -31,11 +26,11 @@ void producer() {
         Message* msg = nullptr;
         // Spin until slot is available
         while ((msg = ringBuffer.claim()) == nullptr) {
-            // _mm_pause(); // CPU hint to relax the loop (SSE2 intrinsic)
+            // Tsc::cpuRelax(); // CPU hint to relax the loop (PAUSE on x86, ISB on AArch64)
         }
 
         msg->id = static_cast<uint64_t>(i);
-        msg->timestamp = __rdtsc(); // Read Time-Stamp Counter (CPU cycles)
+        msg->timestamp = Tsc::read(); // RDTSC on x86, CNTVCT_EL0 on AArch64
         ringBuffer.publish();
     }
 }
@@ -51,13 +46,13 @@ void consumer() {
         // Spin until data is available
         while ((msg = ringBuffer.peek()) == nullptr) {}
 
-        uint64_t now = __rdtsc();
+        uint64_t now = Tsc::read();
         totalLatency += (now - msg->timestamp);
 
         ringBuffer.consume();
     }
 
-    std::cout << "Average Latency: " << (totalLatency / MSG_COUNT) << " cycles\n";
+    std::cout << "Average Latency: " << (totalLatency / MSG_COUNT) << " counter ticks\n";
 }
 
 } // namespace

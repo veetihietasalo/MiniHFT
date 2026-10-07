@@ -7,7 +7,7 @@ Most of MiniHFT is written with an AI assistant. An AI is reliable in some areas
 | Syntax, idioms, standard library | Rarely | Warnings as errors on three compilers, clang-tidy, and every header compiling on its own | CI ([code_quality.md](code_quality.md)) |
 | Templates, concepts, overload resolution | A confident claim such as "this concept rejects X" that isn't true | [Compile-fail tests](#compile-fail-tests) | CI, every build without a sanitizer |
 | Lifetimes, aliasing, undefined behaviour | Code that follows the rules on paper and breaks them in real use | AddressSanitizer + UndefinedBehaviorSanitizer and fuzzing, plus [libstdc++ debug mode, stricter UBSan and the Clang Static Analyzer](#lifetimes-and-undefined-behaviour-the-gaps-asan-leaves) | CI |
-| Memory ordering, lock-free code | Plausible but wrong orderings. On x86 these often compile to the same instructions as the right ones. | [ThreadSanitizer on every threaded path](#memory-ordering-every-threaded-path-more-schedules), SPSC stress under three thread schedules, and two tests that pass only if TSan catches a deliberately broken queue | CI ([memory_ordering.md](memory_ordering.md)) |
+| Memory ordering, lock-free code | Plausible but wrong orderings. On x86 these often compile to the same instructions as the right ones. | [ThreadSanitizer on every threaded path](#memory-ordering-every-threaded-path-more-schedules), SPSC stress under three thread schedules, two tests that pass only if TSan catches a deliberately broken queue, and the stress tests natively on ARM64 | CI ([memory_ordering.md](memory_ordering.md)) |
 | Performance claims | Reasoning about caches and branches without measuring | [Benchmark baselines](#benchmark-baselines): JSON results, `compare.py`, saved baselines, and an A/B job in CI | The benchmark machine; CI only reports |
 
 ## Compile-fail tests
@@ -110,7 +110,7 @@ ThreadSanitizer already ran the unit tests, and `TSan.CatchesRelaxedPublish` pro
 | `TSan.CatchesRelaxedConsume` | TSan | Passes only if TSan reports the race in a queue whose `consume()` is relaxed ([`tests/RelaxedConsumeRingBuffer.hpp`](../tests/RelaxedConsumeRingBuffer.hpp)), next to the existing relaxed-`publish()` test |
 | `Smoke.<program>`, 12 | sanitizer builds, label `smoke` | Every program with small inputs: `ring_latency` (paced, burst, and with a core that doesn't exist, so a failed pin must still pass), `ring_study` with and without busy work, `ring_bench`, `orderbook_latency`, `gen_itch` → `itch_test` and `itch_replay`, `MiniHFT`, `hw_bench` |
 
-The 22 stress tests take 7 s under TSan. The `clang-tsan` CI job also repeats them 10 times, each repeat with new seeds: 220 runs, 33 s locally.
+The 22 stress tests take 7 s under TSan. Both `clang-tsan` CI jobs, x86-64 and ARM64, also repeat them 10 times, each repeat with new seeds: 220 runs, 33 s locally.
 
 Every file with an atomic or a thread now has its threads run under TSan:
 
@@ -145,7 +145,7 @@ What that shows:
 
 - **Fences.** TSan doesn't model `std::atomic_thread_fence`. Correct fence-based code would be reported as a race, and TSan couldn't tell a right fence from a wrong one. Nothing in the code uses a fence today; keep it that way, or add a different check along with the fence.
 - **Ordering between atomics only.** A sleep/wake handshake that needs `seq_cst` but uses acquire/release, or a seqlock, can be wrong with no plain-memory race for TSan to report. No such protocol exists here yet. A memory-model checker would be needed for one.
-- **Weakly ordered hardware.** Everything above ran on x86. Running the stress tests on ARM, where the hardware really does reorder, would be the strongest check for this area. `Tsc.hpp` has to be ported first.
+- **Weakly ordered hardware.** TSan reasons about happens-before, not about what a CPU actually reorders, and everything above ran on x86. The ARM64 CI jobs close that gap: there the stress tests run natively on an Arm Neoverse N2, where a relaxed `publish()` really does deliver damaged messages ([memory_ordering.md](memory_ordering.md#measured-on-arm)).
 - **Executions that don't happen,** as the off-by-one shows: 14 of 20 is not 20 of 20.
 
 ## Benchmark baselines

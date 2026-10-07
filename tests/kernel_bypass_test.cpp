@@ -5,10 +5,11 @@
 #include <thread>
 
 #include "KernelBypass.hpp"
+#include "SpscStress.hpp" // stressCount
 
 namespace {
 constexpr size_t kRingSize = KernelBypass::RING_SIZE;
-constexpr uint32_t kStressPackets = 200'000; // about 195 laps of the ring
+constexpr auto kStressPackets = static_cast<uint32_t>(stressCount(200'000)); // 195 laps of the ring, 4,883 on ARM
 } // namespace
 
 TEST(KernelBypass, PollReturnsPacketsInArrivalOrder) {

@@ -69,7 +69,7 @@ TEST(RingBuffer, WrapsAroundManyTimes) {
 // Two threads, one cache-line-sized message each. Run it under the clang-tsan preset:
 // ThreadSanitizer reports a data race if either release/acquire pair stops synchronizing.
 TEST(RingBuffer, SpscStressDeliversEveryMessageIntactAndInOrder) {
-    constexpr uint64_t kCount = 300'000;
+    constexpr uint64_t kCount = stressCount(300'000);
     const StressResult r = runSpscStress<RingBuffer<StressMessage, 1024>>(kCount);
     EXPECT_EQ(r.received, kCount);
     EXPECT_EQ(r.badSequence, 0u);
@@ -81,7 +81,7 @@ TEST(RingBuffer, SpscStressDeliversEveryMessageIntactAndInOrder) {
 // That leans on edge 2 (consume() release -> claim() acquire): the producer must never
 // overwrite a slot the consumer is still copying.
 TEST(RingBuffer, SpscStressWithTinyQueueNeverOverwritesUnreadSlots) {
-    constexpr uint64_t kCount = 100'000;
+    constexpr uint64_t kCount = stressCount(100'000);
     const StressResult r = runSpscStress<RingBuffer<StressMessage, 8>>(kCount);
     EXPECT_EQ(r.received, kCount);
     EXPECT_TRUE(r.clean()) << r.badSequence << " bad sequence, " << r.badPayload << " bad payload, "

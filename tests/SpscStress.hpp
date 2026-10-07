@@ -37,6 +37,27 @@ struct StressResult {
     bool clean() const { return badSequence == 0 && badPayload == 0 && badChecksum == 0; }
 };
 
+// How many messages a stress test that sends `shortRun` elsewhere sends here. Natively on AArch64
+// the hardware really reorders stores, but a missing release damaged only 1 in 6,000 to 1 in
+// 15 million messages there (docs/memory_ordering.md), so those runs send 5M. x86 never reorders
+// these stores, and ThreadSanitizer finds a missing edge without volume: both keep the short run.
+#if defined(__SANITIZE_THREAD__) // GCC
+#define MINIHFT_STRESS_UNDER_TSAN 1
+#elif defined(__has_feature)     // Clang
+#if __has_feature(thread_sanitizer)
+#define MINIHFT_STRESS_UNDER_TSAN 1
+#endif
+#endif
+
+constexpr uint64_t stressCount(uint64_t shortRun) {
+#if defined(__aarch64__) && !defined(MINIHFT_STRESS_UNDER_TSAN)
+    (void)shortRun;
+    return 5'000'000;
+#else
+    return shortRun;
+#endif
+}
+
 enum class StressSchedule : uint8_t { YieldWhenBlocked, Tight, Random };
 
 // splitmix64 finalizer: a cheap, well-mixed function of (seq, k).
