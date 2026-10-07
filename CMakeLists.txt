@@ -131,6 +131,7 @@ if(MINIHFT_BUILD_TESTS)
         set_tests_properties(TSan.CatchesRelaxedPublish PROPERTIES
             PASS_REGULAR_EXPRESSION "WARNING: ThreadSanitizer: data race")
     endif()
+    include(cmake/SanitizerSmokeTests.cmake)
 endif()
 
 if(MINIHFT_BUILD_BENCHMARKS)
