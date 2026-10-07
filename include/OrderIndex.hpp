@@ -11,7 +11,6 @@
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
-#include <utility>
 #include <vector>
 
 template <typename Value>
@@ -21,25 +20,15 @@ public:
 
     explicit OrderIndex(size_t expectedEntries = 1024) { rehash(capacityFor(expectedEntries)); }
 
-    // A moved-from index is empty and can be used again: it has no slots until the next
-    // tryInsert() allocates them. The implicit moves would take the slots but keep the old size,
-    // mask and shift, and the next call on the source would index an empty table.
+    // Not movable. The implicit moves took the slots but kept the size, mask and shift, so the
+    // next call on the moved-from index read an empty table. Making a moved-from index usable
+    // would cost an emptiness check in every find(): measured at +2 ns on a ~30 ns take
+    // (docs/verification.md). Nothing moves an index (the book builder owns one for the whole
+    // day), so moving one is a compile error instead (tests/compile_fail/order_index_move.cpp).
     OrderIndex(const OrderIndex&) = default;
     OrderIndex& operator=(const OrderIndex&) = default;
-    OrderIndex(OrderIndex&& other) noexcept
-        : slots_(std::move(other.slots_)), mask_(other.mask_), shift_(other.shift_), size_(other.size_) {
-        other.becomeEmpty();
-    }
-    OrderIndex& operator=(OrderIndex&& other) noexcept {
-        if (this != &other) {
-            slots_ = std::move(other.slots_);
-            mask_ = other.mask_;
-            shift_ = other.shift_;
-            size_ = other.size_;
-            other.becomeEmpty();
-        }
-        return *this;
-    }
+    OrderIndex(OrderIndex&&) = delete;
+    OrderIndex& operator=(OrderIndex&&) = delete;
     ~OrderIndex() = default;
 
     [[nodiscard]] size_t size() const { return size_; }
@@ -48,7 +37,7 @@ public:
     // Value for `key`, or nullptr if absent. The pointer is valid until the next tryInsert(),
     // which may rehash the table.
     [[nodiscard]] Value* find(uint64_t key) {
-        if (key == kEmpty || size_ == 0) return nullptr; // size_ == 0: a moved-from index has no slots
+        if (key == kEmpty) return nullptr;
         for (size_t i = home(key);; i = (i + 1) & mask_) {
             Slot& s = slots_[i];
             if (s.key == key) return &s.value;
@@ -60,8 +49,7 @@ public:
     // kEmpty: an existing entry is never overwritten.
     [[nodiscard]] bool tryInsert(uint64_t key, const Value& value) {
         if (key == kEmpty) return false;
-        // Keeps the load factor <= 0.5: twice the slots when full, 16 for a moved-from index.
-        if ((size_ + 1) * 2 > slots_.size()) rehash(capacityFor(size_ + 1));
+        if ((size_ + 1) * 2 > slots_.size()) rehash(slots_.size() * 2); // keep load factor <= 0.5
         for (size_t i = home(key);; i = (i + 1) & mask_) {
             Slot& s = slots_[i];
             if (s.key == key) return false;
@@ -75,7 +63,7 @@ public:
 
     // Removes `key`; returns false if it wasn't there.
     bool erase(uint64_t key) {
-        if (key == kEmpty || size_ == 0) return false; // size_ == 0: a moved-from index has no slots
+        if (key == kEmpty) return false;
         size_t hole = home(key);
         while (slots_[hole].key != key) {
             if (slots_[hole].key == kEmpty) return false;
@@ -102,11 +90,6 @@ private:
         uint64_t key = kEmpty;
         Value value{};
     };
-
-    void becomeEmpty() noexcept {
-        slots_.clear(); // a moved-from vector is empty already; this makes it certain
-        size_ = 0;
-    }
 
     static size_t capacityFor(size_t entries) {
         size_t c = 16;

@@ -3,11 +3,9 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
-#include <initializer_list>
 #include <iterator>
 #include <random>
 #include <unordered_map>
-#include <utility>
 
 #include "OrderIndex.hpp"
 
@@ -41,34 +39,6 @@ TEST(OrderIndex, ReservedKeyIsRefusedAndNeverFound) {
     EXPECT_EQ(index.find(OrderIndex<int>::kEmpty), nullptr);
     EXPECT_FALSE(index.erase(OrderIndex<int>::kEmpty));
     EXPECT_EQ(index.size(), 0u);
-}
-
-// A moved-from index is empty and can be used again. The implicit moves took the slots but kept
-// the old size, mask and shift, so the next call on the source indexed an empty table.
-TEST(OrderIndex, MovedFromIndexIsEmptyAndUsable) {
-    OrderIndex<int> source;
-    ASSERT_TRUE(source.tryInsert(1, 10));
-    OrderIndex<int> moved(std::move(source));
-    ASSERT_NE(moved.find(1), nullptr);
-    EXPECT_EQ(*moved.find(1), 10);
-
-    OrderIndex<int> assigned;
-    ASSERT_TRUE(assigned.tryInsert(3, 30));
-    assigned = std::move(moved);
-    ASSERT_NE(assigned.find(1), nullptr);
-    EXPECT_EQ(assigned.find(3), nullptr);
-
-    // Using the moved-from objects is what this test is about.
-    // NOLINTNEXTLINE(bugprone-use-after-move)
-    for (OrderIndex<int>* from : {&source, &moved}) {
-        EXPECT_EQ(from->size(), 0u);
-        EXPECT_EQ(from->find(1), nullptr);
-        EXPECT_FALSE(from->erase(1));
-        EXPECT_TRUE(from->tryInsert(2, 20));
-        ASSERT_NE(from->find(2), nullptr);
-        EXPECT_EQ(*from->find(2), 20);
-        EXPECT_EQ(from->size(), 1u);
-    }
 }
 
 // Random inserts and erases against std::unordered_map. A small initial size forces many

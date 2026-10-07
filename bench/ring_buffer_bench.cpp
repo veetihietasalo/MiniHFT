@@ -12,7 +12,8 @@ namespace {
 void BM_RingBuffer_PushPopSameThread(benchmark::State& state) {
     auto rb = std::make_unique<RingBuffer<uint64_t, 1024>>();
     uint64_t i = 0;
-    for (auto _ : state) {
+    // Google Benchmark's loop variable is unused by design.
+    for (auto _ : state) { // NOLINT(clang-analyzer-deadcode.DeadStores)
         uint64_t* slot = rb->claim(); // one in, one out: the queue is never full or empty here
         if (slot == nullptr) {
             state.SkipWithError("claim() failed");

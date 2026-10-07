@@ -139,6 +139,10 @@ block(SCOPE_FOR VARIABLES)
         SOURCE ${dir}/object_pool_over_aligned.cpp EXPECT "default alignment")
     minihft_compile_fail_test(NAME ObjectPoolRejectsBlockSizeZero
         SOURCE ${dir}/object_pool_block_size_zero.cpp EXPECT "BlockSize must be at least 1")
+    # Deleted functions: GCC "use of deleted function", Clang "call to deleted constructor",
+    # MSVC C2280 "attempting to reference a deleted function".
+    minihft_compile_fail_test(NAME OrderIndexCannotBeMoved
+        SOURCE ${dir}/order_index_move.cpp EXPECT "deleted|C2280")
 
     # [[nodiscard]]: calls that can fail, whose result must not be dropped
     minihft_compile_fail_test(NAME PinThreadResultMustBeUsed WARNING
