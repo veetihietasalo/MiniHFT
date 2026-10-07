@@ -46,8 +46,8 @@ One exception remains: the test binary is built without `-Wnull-dereference`. GC
 
 | Preset | Checks | Tests |
 |--------|--------|------:|
-| `clang-asan-ubsan` | AddressSanitizer + UndefinedBehaviorSanitizer; leak detection on | 69 |
-| `clang-tsan` | ThreadSanitizer, including the test that passes only if TSan reports the deliberately broken queue (W02) | 70 |
+| `clang-asan-ubsan` | AddressSanitizer + UndefinedBehaviorSanitizer; leak detection on | 74 |
+| `clang-tsan` | ThreadSanitizer, including the test that passes only if TSan reports the deliberately broken queue (W02) | 75 |
 
 Both build with `-fno-sanitize-recover=all`, so the first report ends the run and a test can't pass after one. Sanitizer runtimes replace global `operator new`, and so do the zero-allocation tests, so those 8 tests only run in the other builds.
 
@@ -88,12 +88,12 @@ CI uses Ubuntu 24.04's clang-tidy 18. A check newer than that (`misc-use-interna
 
 | Job | What must hold |
 |-----|----------------|
-| `msvc-release` | MSVC `/W4 /WX` build; 77 tests |
-| `gcc-release` | GCC strict warnings with `-Werror`; 77 tests |
-| `clang-tsan` | ThreadSanitizer; 70 tests |
-| `clang-asan-ubsan` | AddressSanitizer + UndefinedBehaviorSanitizer; 69 tests |
-| `gcc-release (arm64)` | The same build on AArch64 (Arm Neoverse N2), where stores really are reordered; 78 tests, including one that passes only if the broken queue delivers damaged messages ([memory_ordering.md](memory_ordering.md#measured-on-arm)) |
-| `clang-tsan (arm64)` | ThreadSanitizer on AArch64; 70 tests |
+| `msvc-release` | MSVC `/W4 /WX` build; 82 tests |
+| `gcc-release` | GCC strict warnings with `-Werror`; 82 tests |
+| `clang-tsan` | ThreadSanitizer; 75 tests |
+| `clang-asan-ubsan` | AddressSanitizer + UndefinedBehaviorSanitizer; 74 tests |
+| `gcc-release (arm64)` | The same build on AArch64 (Arm Neoverse N2), where stores really are reordered; 83 tests, including one that passes only if the broken queue delivers damaged messages ([memory_ordering.md](memory_ordering.md#measured-on-arm)) |
+| `clang-tsan (arm64)` | ThreadSanitizer on AArch64; 75 tests |
 | `fuzz` | 60 s of libFuzzer without a crash, starting from the saved inputs and `gen_itch`'s sample feed |
 | `clang-tidy` | 0 findings |
 

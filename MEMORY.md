@@ -6,10 +6,10 @@ Durable context for agent sessions on MiniHFT: facts that are expensive to redis
 
 - **Platforms (since PR #10, 2026-10-07):** Windows x64 (MSVC), Linux x86-64 and Linux AArch64 (GCC 13 / Clang 18). `include/Tsc.hpp` reads the TSC on x86 and `CNTVCT_EL0` on AArch64. Other ARM toolchains, such as MSVC ARM64, still hit its `#error`.
 - **CI matrix** (`.github/workflows/build.yml`): msvc-release, gcc-release, clang-tsan and clang-asan-ubsan on x86; `gcc-release (arm64)` and `clang-tsan (arm64)` on `ubuntu-24.04-arm`; plus fuzz and clang-tidy. The x86 job names are unchanged, so any required checks still match.
-- **Test counts:** 77 (gcc-release x86, MSVC), 78 (gcc-release arm64: adds `ARM.RelaxedPublishDamagesMessages`), 70 (clang-tsan, both architectures), 69 (asan-ubsan).
+- **Test counts:** 82 (gcc-release x86, MSVC), 83 (gcc-release arm64: adds `ARM.RelaxedPublishDamagesMessages`), 75 (clang-tsan, both architectures), 74 (asan-ubsan).
 - **Still open:**
   - `Network.hpp` is Winsock-only (W09).
-  - The other SPSC stress tests stay at 100k–300k messages on ARM. Only the tiny-queue `RingBuffer` test runs 5M there.
+  - The SPSC stress tests send 5M messages natively on AArch64 (`stressCount()` in `tests/SpscStress.hpp`). x86 and TSan keep 100k–300k. With 1024 slots, even 5M messages catch a relaxed `publish()` only now and then; only the 8-slot rings catch it reliably, so every W03 variant also runs with 8 slots. `KernelBypass` (ring fixed at 1024) has no small-ring test.
 
 ## Hardware facts (measured)
 
