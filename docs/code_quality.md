@@ -26,7 +26,7 @@ The bugs matter for what a corrupted file, a replay bug or a fuzzer can send: ba
 ## APIs that make those bugs harder to write
 
 - **`std::span` in the parser.** `ItchReader::next()` returns a `std::span<const uint8_t>`, empty at the end of input, and only ever a message whose length matches its type. `itch::dispatch(span, handler)` checks the length again and returns whether it dispatched. A decoder can no longer receive a pointer without a length.
-- **`[[nodiscard]]`** on every query and every call that can fail: `pinThread`, `claim`, `peek`, `find`, `tryInsert`, `acquire`, the histogram's percentiles, the TSC readers. Ignoring one is a warning, and with warnings as errors, a build failure. The benchmarks that used to ignore `pinThread` now say when pinning failed, since their numbers mean less then.
+- **`[[nodiscard]]`** on every query and every call that can fail: `pinThread`, `claim`, `peek`, `find`, `tryInsert`, `acquire`, `itch::dispatch`, the histogram's percentiles, the TSC readers. Ignoring one is a warning, and with warnings as errors, a build failure. Compile-fail tests prove it for ten of them ([verification.md](verification.md#compile-fail-tests)), and found `dispatch` missing from the list. The benchmarks that used to ignore `pinThread` now say when pinning failed, since their numbers mean less then.
 - **An intrusive free list in `ObjectPool`.** A released slot stores the next free slot's pointer in its own, now unused, bytes. `release()` used to push onto a `std::vector<T*>`, which allocates whenever it grows: **13 allocations to release 3,000 objects, now 0** (`ZeroAlloc.ObjectPoolReleaseNeverAllocates`). A burst of cancels no longer touches the heap.
 - **`OrderIndex::tryInsert` never overwrites** (bug 2). `find()` documents that its pointer is invalidated by the next insert, which may rehash.
 
@@ -88,12 +88,13 @@ CI uses Ubuntu 24.04's clang-tidy 18. A check newer than that (`misc-use-interna
 
 | Job | What must hold |
 |-----|----------------|
-| `msvc-release` | MSVC `/W4 /WX` build; 77 tests |
-| `gcc-release` | GCC strict warnings with `-Werror`; 77 tests |
-| `clang-tsan` | ThreadSanitizer; 70 tests |
-| `clang-asan-ubsan` | AddressSanitizer + UndefinedBehaviorSanitizer; 69 tests |
+| `msvc-release` | MSVC `/W4 /WX` build; 105 tests: 77 unit tests, 27 [compile-fail tests](verification.md#compile-fail-tests) and `compare.py`'s tests |
+| `gcc-release` | GCC strict warnings with `-Werror`; the same 105 tests |
+| `clang-tsan` | ThreadSanitizer; 71 tests (no compile-fail tests under a sanitizer) |
+| `clang-asan-ubsan` | AddressSanitizer + UndefinedBehaviorSanitizer; 70 tests |
 | `fuzz` | 60 s of libFuzzer without a crash, starting from the saved inputs and `gen_itch`'s sample feed |
 | `clang-tidy` | 0 findings |
+| `bench-compare` | Report only: benchmarks the merge-base and the head on the same runner and writes the comparison to the job summary ([verification.md](verification.md#benchmark-baselines)). A regression raises a warning, never a failure. |
 
 ## Reproduce
 
@@ -114,6 +115,7 @@ If a sanitizer build dies at startup with `unexpected memory mapping`, the kerne
 ## Still open
 
 - **Too few values give 0 rather than an error.** `mean()` of nothing and `variance()` of one value return 0, while `covariance()` throws (`Statistics.MeanOfNothingAndVarianceOfOneValueAreZero` pins this). With a volatility of 0 from one sample, Avellaneda-Stoikov quotes its narrowest spread with no inventory skew. Pick one contract before a strategy uses these.
+- **Three calls that can fail still aren't `[[nodiscard]]`:** `OrderIndex::erase`, `FpgaPipeline::output` and `Network::connectToServer`. Making `erase` one means first deciding what `ItchBook::removeOrder` should do when it fails.
 - **MSVC doesn't check initializer order.** Its C5038 is off by default, even at `/W4`, so the `Matrix` bug below failed only the GCC and Clang builds. `/w15038` would turn it on.
 
 ### Closed: the three headers nothing used

@@ -126,6 +126,8 @@ gzip -dc 12302019.NASDAQ_ITCH50.gz | ./build/gcc-release/itch_replay -   # sampl
 
 On Windows the programs are in `build/msvc-release/Release/`. They print the CPU, compiler and core pinning with their results. `--help` lists the options.
 
+Each harness takes `--json=FILE` for machine-readable results. `bench/compare.py` compares runs against a baseline and exits 1 on a regression. The CCD matrix saves a baseline with `--save-baseline` and checks a later build with `--check` ([how, and why only central metrics are gated](docs/verification.md#benchmark-baselines)).
+
 `powershell -ExecutionPolicy Bypass -File bench\run_ccd_matrix.ps1` builds on Windows, then runs the ring and order-book benchmarks on a core pair inside each CCD and on a pair across CCDs. It reads the CCD layout and SMT state from Windows and writes everything to `build\bench-results\`. `bench/run_ccd_matrix.sh` does the same on Linux, and can also replay the gzipped NASDAQ day on each CCD. Only native Linux gives meaningful CCD numbers, not WSL2. [Benchmarking on native Ubuntu](docs/native_linux.md) covers the setup.
 
 ## 🛠️ Build Instructions
@@ -147,7 +149,7 @@ Each preset builds into `build/<preset>/`:
 | `clang-fuzz` | Linux | libFuzzer target for the ITCH parser (`itch_fuzz`) |
 | `clang-tidy` | Linux | Configure only: the compile database clang-tidy runs on |
 
-Every preset treats warnings as errors. CI builds and tests the first four on each push, fuzzes for 60 s and runs clang-tidy; see [Code Quality](docs/code_quality.md).
+Every preset treats warnings as errors. CI builds and tests the first four on each push, fuzzes for 60 s, runs clang-tidy, and compares benchmarks against the merge-base (report only); see [Code Quality](docs/code_quality.md) and [Verification](docs/verification.md).
 
 ```bash
 cmake --preset gcc-release          # configure (use msvc-release on Windows)
@@ -254,6 +256,7 @@ This project demonstrates skills relevant to:
 - [The L3 Order Book](docs/order_book.md) - Design, bugs fixed in the old ITCH code, old vs new, and a full NASDAQ day replayed
 - [Zero-Overhead Extension Points](docs/zero_overhead.md) - Concepts for handlers and listeners, template vs virtual listener cost, the generated assembly, and zero-allocation tests
 - [Code Quality](docs/code_quality.md) - Six bugs proven by failing tests and then fixed, hardened APIs, sanitizers, fuzzing, clang-tidy, and what CI checks
+- [Verification](docs/verification.md) - A check for each area where AI-written C++ goes wrong: compile-fail tests for concepts and `static_assert`s, and benchmark baselines with a regression gate, shown catching a real 50 ns regression
 - [Hard Mode Walkthrough](docs/hard_mode_walkthrough.md) - Advanced concepts
 - [Learning Roadmap](learning_roadmap.md) - Structured learning path
 
