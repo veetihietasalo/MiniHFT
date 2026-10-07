@@ -38,7 +38,7 @@ graph TB
 ## 🚀 Features
 
 ### Core Infrastructure
-- ✅ **Lock-Free Ring Buffer** - Disruptor pattern, ~50–70 ns median one-way latency between pinned cores
+- ✅ **Lock-Free Ring Buffer** - Disruptor pattern, ~50 ns median one-way latency between pinned cores on one CCD, ~175 ns across CCDs
 - ✅ **Thread Pinning** - CPU core isolation for deterministic performance
 - ✅ **Zero-Copy Parsing** - Direct memory mapping, no allocations
 - ✅ **Cache Optimization** - `alignas(64)` to prevent false sharing
@@ -61,7 +61,7 @@ graph TB
 
 ## 📊 Performance
 
-Measured on an AMD Ryzen 9 9900X3D running with one CCD enabled and SMT off (6 cores), Windows 11 and WSL2. Timestamps come from the CPU's time-stamp counter, and percentiles from `LatencyHistogram` (at most 1.6 % bucket error). Every figure includes about 10 ns of timer overhead.
+Measured on an AMD Ryzen 9 9900X3D, Windows 11 and WSL2. Unless a table says 12 cores, it ran with one CCD enabled and SMT off (6 cores). Timestamps come from the CPU's time-stamp counter, and percentiles from `LatencyHistogram` (at most 1.6 % bucket error). Every figure includes about 10 ns of timer overhead.
 
 ### Ring buffer: one-way latency between two pinned threads
 
@@ -77,6 +77,16 @@ Measured on an AMD Ryzen 9 9900X3D running with one CCD enabled and SMT off (6 c
 - Measured from each message's *scheduled* send time rather than its actual send time, p99.9 reaches several milliseconds. One stall delays every message queued behind it, and measuring from the actual send hides that (coordinated omission).
 - With back-to-back sends (`--interval-ns=0`) the median is 23–34 µs. That's queueing: each message waits behind up to 1,023 others.
 - The table above was measured on the original queue. Since W03, `RingBuffer` uses release stores instead of `fetch_add` and caches the other side's index. Back-to-back throughput went from 39 to 6.4 ns per message (25 → 160 M msg/s), and the paced median is ~50 ns. See [RingBuffer v2](docs/ring_buffer_v2.md) for each change measured on its own.
+
+With both CCDs enabled (12 cores, SMT on), `RingBuffer` v2, MSVC and high priority. Each cell is the range over two runs:
+
+| 12 cores | p50 | p90 | p99 | p99.9 | max |
+|----------|-----|-----|-----|-------|-----|
+| Same CCD (cores 4 → 6) | 50 ns | 61 ns | 71 ns | 0.85–1.0 µs | 17–20 µs |
+| **Across CCDs** (cores 4 → 16) | **171–180 ns** | 262–291 ns | 320–331 ns | 1.7–1.9 µs | 19–81 µs |
+
+- **Twice the cores cut the tail by two orders of magnitude.** The same high-priority run that had a p99 of 0.9 µs on 6 cores has one of 71 ns on 12, and p99.9 drops from 222 µs to under 1 µs. Windows now has idle cores to run its own work on. This compares against the original queue, but the median hop is the same 50 ns for both, so the queue change doesn't account for the tail.
+- **Crossing CCDs adds about 125 ns per hop.** The cache line has to cross the I/O die. Keep a producer and its consumer on one CCD. What crossing does to each queue design is in [RingBuffer v2](docs/ring_buffer_v2.md#across-ccds).
 
 ### Order book: one update, original book vs L3 book
 

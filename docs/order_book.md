@@ -49,6 +49,8 @@ asks_  (descending: best ask at the back)
 
 The old book's cost grows linearly with depth: inserting at, or erasing from, the front of a vector of orders shifts every order. The new book's doesn't. Its take is an index lookup plus an unlink from the top level, and its make is a binary search over levels plus an append.
 
+Rerun with both CCDs enabled (`bench/run_ccd_matrix.ps1`), the MSVC p50s above came out the same on CCD0 (96 MB L3) and on CCD1 (32 MB). CCD1 is 0–4 % faster per event, because it clocks higher and this benchmark's working set fits in L2. The V-cache could only matter on the real day below, whose order index alone is 128 MB. That replay hasn't been run on each CCD yet.
+
 ## A full NASDAQ trading day
 
 [`bench/itch_replay`](../bench/itch_replay.cpp) streamed NASDAQ's public TotalView-ITCH 5.0 sample for **30 December 2019** (`12302019.NASDAQ_ITCH50.gz` from emi.nasdaq.com, 3.5 GB compressed) through the builder. That's every symbol and every order event, with each book update timed. GCC 13 under WSL2, pinned to one core, decompressed on the fly:
