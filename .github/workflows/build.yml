@@ -18,6 +18,7 @@ jobs:
         include:
           - { os: windows-latest, preset: msvc-release }
           - { os: ubuntu-24.04, preset: gcc-release }
+          - { os: ubuntu-24.04, preset: gcc-debug-stl }
           - { os: ubuntu-24.04, preset: clang-tsan }
           - { os: ubuntu-24.04, preset: clang-asan-ubsan }
 
