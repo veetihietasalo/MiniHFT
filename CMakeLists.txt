@@ -131,6 +131,9 @@ if(MINIHFT_BUILD_TESTS)
         set_tests_properties(TSan.CatchesRelaxedPublish PROPERTIES
             PASS_REGULAR_EXPRESSION "WARNING: ThreadSanitizer: data race")
     endif()
+
+    # Misuses of concepts, static_asserts and [[nodiscard]] that must fail to compile.
+    include(cmake/CompileFailTests.cmake)
 endif()
 
 if(MINIHFT_BUILD_BENCHMARKS)

@@ -23,7 +23,7 @@
 
 template <typename T, size_t Size>
 class RingV0FetchAdd {
-    static_assert((Size & (Size - 1)) == 0, "Size must be power of 2");
+    static_assert(Size > 0 && (Size & (Size - 1)) == 0, "Size must be power of 2");
     alignas(CACHE_LINE_SIZE) std::atomic<size_t> head{0};
     alignas(CACHE_LINE_SIZE) std::atomic<size_t> tail{0};
     alignas(CACHE_LINE_SIZE) T buffer[Size];
@@ -47,7 +47,7 @@ public:
 
 template <typename T, size_t Size>
 class RingV1Store {
-    static_assert((Size & (Size - 1)) == 0, "Size must be power of 2");
+    static_assert(Size > 0 && (Size & (Size - 1)) == 0, "Size must be power of 2");
     alignas(CACHE_LINE_SIZE) std::atomic<size_t> head{0};
     alignas(CACHE_LINE_SIZE) std::atomic<size_t> tail{0};
     alignas(CACHE_LINE_SIZE) T buffer[Size];
@@ -71,7 +71,7 @@ public:
 
 template <typename T, size_t Size, size_t Batch = 1, bool SeparateLines = true>
 class RingV2 {
-    static_assert((Size & (Size - 1)) == 0, "Size must be power of 2");
+    static_assert(Size > 0 && (Size & (Size - 1)) == 0, "Size must be power of 2");
     static_assert(Batch >= 1 && Batch <= Size, "Batch must be in [1, Size]");
 
     static constexpr size_t kSideAlign = SeparateLines ? CACHE_LINE_SIZE : alignof(size_t);
