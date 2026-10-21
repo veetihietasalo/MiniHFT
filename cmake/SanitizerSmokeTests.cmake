@@ -29,7 +29,14 @@ endforeach()
 # message in a 2-slot queue, whatever the schedule.
 if(MINIHFT_SANITIZER STREQUAL "thread")
     add_test(NAME TSan.CatchesRelaxedConsume COMMAND spsc_stress relaxed-consume-tiny tight 1000 1)
-    set_tests_properties(TSan.CatchesRelaxedConsume PROPERTIES
+    # KernelBypass with either handoff relaxed. Neither damaged a packet natively on an Arm
+    # Neoverse N2, even with 8 descriptors (docs/memory_ordering.md), so ThreadSanitizer is the only
+    # check that sees them. The relaxed poll needs a descriptor reused: 1,000 packets reuse each of
+    # the 8 more than a hundred times.
+    add_test(NAME TSan.CatchesRelaxedKernelBypassReceive COMMAND spsc_stress kb-relaxed-receive tight 1000 1)
+    add_test(NAME TSan.CatchesRelaxedKernelBypassPoll COMMAND spsc_stress kb-relaxed-poll-tiny tight 1000 1)
+    set_tests_properties(TSan.CatchesRelaxedConsume TSan.CatchesRelaxedKernelBypassReceive
+                         TSan.CatchesRelaxedKernelBypassPoll PROPERTIES
         PASS_REGULAR_EXPRESSION "WARNING: ThreadSanitizer: data race"
         TIMEOUT 60)
 endif()

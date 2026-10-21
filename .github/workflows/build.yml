@@ -48,26 +48,6 @@ jobs:
       - name: Test
         run: ctest --preset ${{ matrix.preset }}
 
-      # TEMPORARY, remove before merge: how often the broken KernelBypass copies damage packets
-      # natively on ARM, with 1024 and 8 descriptors. The correct rings are the control.
-      - name: "TEMP: KernelBypass reordering on ARM"
-        if: matrix.name == 'gcc-release (arm64)'
-        timeout-minutes: 20
-        shell: bash
-        run: |
-          set +e
-          for q in kernel-bypass kernel-bypass-tiny kb-relaxed-receive kb-relaxed-receive-tiny kb-relaxed-poll kb-relaxed-poll-tiny; do
-            for sched in tight yield; do
-              damaged=0; bad=0; start=$SECONDS
-              for seed in 1 2 3 4 5 6 7 8 9 10; do
-                line=$(./build/gcc-release/spsc_stress "$q" "$sched" 5000000 "$seed" | tail -n 1)
-                n=$(sed -E 's/.*, ([0-9]+) bad sequence.*/\1/' <<< "$line")
-                bad=$((bad + n)); ((n > 0)) && damaged=$((damaged + 1))
-              done
-              echo "RESULT $q $sched: $damaged/10 runs damaged, $bad bad packets of 50M ($((SECONDS - start)) s)"
-            done
-          done
-
       # More schedules for the lock-free code: each repeat picks new seeds, and a failure prints its seed.
       - name: Stress the lock-free code (10 repeats)
         if: matrix.preset == 'clang-tsan'
