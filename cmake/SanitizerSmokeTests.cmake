@@ -17,7 +17,8 @@ target_link_libraries(spsc_stress PRIVATE minihft_core)
 
 # Under ThreadSanitizer 100,000 messages take about 0.2-0.5 s per test.
 set(MINIHFT_STRESS_MESSAGES 100000)
-foreach(queue IN ITEMS ring ring-tiny v0 v0-tiny v1 v1-tiny v2 v2-one-line v2-batch4 v2-tiny-batch kernel-bypass)
+foreach(queue IN ITEMS ring ring-tiny v0 v0-tiny v1 v1-tiny v2 v2-one-line v2-batch4 v2-tiny-batch kernel-bypass
+                       kernel-bypass-tiny)
     foreach(schedule IN ITEMS tight random)
         add_test(NAME Stress.${queue}.${schedule} COMMAND spsc_stress ${queue} ${schedule} ${MINIHFT_STRESS_MESSAGES})
         set_tests_properties(Stress.${queue}.${schedule} PROPERTIES LABELS stress TIMEOUT 60)
