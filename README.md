@@ -61,6 +61,23 @@ graph TB
 
 ## 📊 Performance
 
+### At a glance
+
+| What | Result | Measured with |
+|------|--------|---------------|
+| One message between two threads (`RingBuffer`, same CCD) | **50 ns p50**, 71 ns p99 | `ring_latency`, MSVC, high priority, 12 cores |
+| The same hop across CCDs | 171–180 ns p50 | cores 4 → 16 |
+| Queue throughput, back-to-back | **6.5–7.0 ns per message** (150 M msg/s), about 6× the original `fetch_add` queue | `ring_study`, MSVC |
+| Order-book update (L3 book) | **20 ns p50**, flat from 10 to 1,000 resting orders per side; the original book took 131 → 1,005 ns | `orderbook_latency`, MSVC |
+| A full NASDAQ day (30 Dec 2019) | **268.7 M messages** at 2.92–2.98 M msg/s end to end; book update p50 131 ns, p99 495–502 ns; 0 unknown orders | `itch_replay`, GCC 13, WSL2 |
+| Heap allocations on the hot paths | **0**, asserted in CI | [`tests/zero_alloc_test.cpp`](tests/zero_alloc_test.cpp) |
+| Strategy hook | 1–3 ns per event as a template; a virtual call adds 1.3–2.3 ns | `orderbook_latency` |
+| Memory ordering | A queue with one release deliberately removed passes on x86 but delivers damaged messages on Arm Neoverse N2. ThreadSanitizer reports it on both. CI runs both checks. | [memory_ordering.md](docs/memory_ordering.md#measured-on-arm) |
+
+All latencies so far come from Windows and WSL2, where the OS sets the tail. Native Linux with isolated cores is next ([setup](docs/native_linux.md)). The details, and every caveat, follow.
+
+### Test machine
+
 Measured on an AMD Ryzen 9 9900X3D, Windows 11 and WSL2. Unless a table says 12 cores, it ran with one CCD enabled and SMT off (6 cores). Timestamps come from the CPU's time-stamp counter, and percentiles from `LatencyHistogram` (at most 1.6 % bucket error). Every figure includes about 10 ns of timer overhead.
 
 ### Ring buffer: one-way latency between two pinned threads
@@ -76,7 +93,7 @@ Measured on an AMD Ryzen 9 9900X3D, Windows 11 and WSL2. Unless a table says 12 
 - The hop itself is ~50–70 ns. The tail is set by the operating system: on a 6-core desktop the spinning threads get preempted. Across repeated runs, normal-priority medians ranged from 70 ns to 6 µs, and high-priority p99 from 0.9 to 16 µs. Isolated cores on native Linux (roadmap W03) should shrink the tail further.
 - Measured from each message's *scheduled* send time rather than its actual send time, p99.9 reaches several milliseconds. One stall delays every message queued behind it, and measuring from the actual send hides that (coordinated omission).
 - With back-to-back sends (`--interval-ns=0`) the median is 23–34 µs. That's queueing: each message waits behind up to 1,023 others.
-- The table above was measured on the original queue. Since W03, `RingBuffer` uses release stores instead of `fetch_add` and caches the other side's index. Back-to-back throughput went from 39 to 6.4 ns per message (25 → 160 M msg/s), and the paced median is ~50 ns. See [RingBuffer v2](docs/ring_buffer_v2.md) for each change measured on its own.
+- The table above was measured on the original queue. Since W03, `RingBuffer` uses release stores instead of `fetch_add` and caches the other side's index. Back-to-back throughput went from 38–39 to 6.5–7.0 ns per message (26 → 150 M msg/s), and the paced median is ~50 ns. See [RingBuffer v2](docs/ring_buffer_v2.md) for each change measured on its own.
 
 With both CCDs enabled (12 cores, SMT on), `RingBuffer` v2, MSVC and high priority. Each cell is the range over two runs:
 

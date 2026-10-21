@@ -18,8 +18,8 @@ Durable context for agent sessions on MiniHFT: facts that are expensive to redis
   - Sanitizer builds skip the compile-fail tests and add 12 `Smoke.*`: 111 on clang-tsan (both architectures, with `TSan.CatchesRelaxedConsume`), 109 on clang-asan-ubsan.
 - **Still open:**
   - `Network.hpp` is Winsock-only (W09).
-  - The SPSC unit stress tests send 5M messages natively on AArch64 (`stressCount()` in `tests/SpscStress.hpp`, since PR #13). x86 and TSan keep 100k–300k. With 1024 slots, even 5M messages catch a relaxed `publish()` only now and then; only the 8-slot rings catch it reliably, so every W03 variant also runs with 8 slots. `KernelBypass` (ring fixed at 1024) has no small-ring test.
-  - The `Stress.*` ctests (`spsc_stress`) send a fixed 100k messages on every build, ARM included (`MINIHFT_STRESS_MESSAGES`, not `stressCount()`). How often their 2-slot queues show a relaxed `publish()` on N2 is unmeasured: `spsc_stress relaxed-publish-tiny tight 30000000` in a temporary arm64 CI step would tell.
+  - The SPSC unit stress tests send 5M messages natively on AArch64 (`stressCount()` in `tests/SpscStress.hpp`, since PR #13). x86 and TSan keep 100k–300k. With 1024 slots, even 5M messages catch a relaxed `publish()` only now and then. The 8-slot rings catch it in most runs (1 to 1,500 damaged per 5M at the GCC rates measured), so every W03 variant also runs with 8 slots. `KernelBypass` (ring fixed at 1024) has no small-ring test.
+  - The `Stress.*` ctests (`spsc_stress`) send a fixed 100k messages on every build, ARM included (`MINIHFT_STRESS_MESSAGES`, not `stressCount()`), under the tight and random schedules. Only 6 of the 22 have 2 slots. At the measured 2-slot rates, a relaxed `publish()` damages about 1 message per 100k at the tight median (0.1 to 4 with random), and the 1024-slot ones almost never show it. Giving the six 2-slot tests 5M on native ARM would catch it in most runs; not done.
 
 ## Decisions not to undo (measured)
 
@@ -30,11 +30,13 @@ Durable context for agent sessions on MiniHFT: facts that are expensive to redis
 
 ## Hardware facts (measured)
 
+- **2 slots (2026-10-21, two hosts, `spsc_stress relaxed-publish-tiny`, 5 runs of 30M each):** damage in every tight and yield run, 20 of 20. 2 slots aren't reliably worse than 8: host 1 had medians of 277 and 4,797 against 15 for 8 slots, host 2 had 387 and 2,037 against 3,206. One yield run damaged 1.7% of its messages. Random stalls: damage in 9 of 10 runs of 3M. The correct 2-slot `RingBuffer` stayed at 0.
+- **A relaxed `consume()` damaged nothing on N2:** 0 in 300M messages on two hosts (2 slots, tight schedule only, so not proof the core never reorders). So far only TSan has caught that bug on this hardware.
 - **GitHub `ubuntu-24.04-arm` runner:** 4 vCPU Azure Cobalt 100, Arm Neoverse N2 (MIDR part `0xd49`), 64 KiB L1d per core, no SMT. BogoMIPS reads 2000, which implies a 1 GHz `CNTVCT_EL0`. That's inferred: the calibration test passed but didn't print the rate.
 - **Relaxed `publish()` on N2** (full table in `docs/memory_ordering.md` → *Measured on ARM*):
   - 8-slot ring: damage in every run. 1024 slots: damage in 3 of 12 runs of 100M messages.
   - Release control: never damaged.
-  - The damage rate varies roughly 10× between runner hosts.
+  - The damage rate varies by up to about 200× between runner hosts (8-slot medians of 15 and 3,206 per 30M on two hosts, 2026-10-21).
   - The reordering is the CPU's: GCC emits the slot `stp`s before `__aarch64_ldadd8_relax`.
 - **Busy-spinning instead of yielding did not raise the damage rate.** Ring size did. Don't retry the spin variant.
 
