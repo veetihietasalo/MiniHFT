@@ -83,7 +83,7 @@ On x86 the broken `publish()` compiles to *exactly the same instructions* as the
 
 The source is wrong on x86 too, not just on ARM. The compiler may move the plain slot stores after a relaxed atomic. Clang happened not to here, but a different compiler, flag or surrounding code could.
 
-The same logic applies to `consume()`. With a relaxed `consume()`, ARM may let the producer see the new `tail` before the consumer's loads from the slot have completed, and overwrite the slot mid-read. x86 never reorders a load with a later store, so that bug hides on x86 too.
+The same logic applies to `consume()`. With a relaxed `consume()`, ARM may let the producer see the new `tail` before the consumer's loads from the slot have completed, and overwrite the slot mid-read. x86 never reorders a load with a later store, so that bug hides on x86 too. On the N2 runners it damaged no message either, in 300M ([below](#two-slots-and-the-other-direction)).
 
 <details>
 <summary>Source for the table</summary>
@@ -135,8 +135,9 @@ The CPU made the increment visible to the consumer before the four stores. With 
 
 **What it means:**
 - The bug is real on hardware that's widely deployed (Graviton, Cobalt, Axion and Grace all use Neoverse cores), not only a rule of the C++ memory model.
-- It's rare. With 8 slots, between 1 in 6,000 and 1 in 15 million messages was damaged. With 1024 slots it was about 1 in 10 million or fewer, and 9 of the 12 runs of 100M messages showed nothing at all. A stress test that passes on ARM is evidence, not proof. ThreadSanitizer, which also runs on the ARM runner in CI, found the race on the first run.
-- So a stress test needs millions of messages on ARM. Natively on AArch64 every SPSC stress test (`RingBuffer`, the W03 variants and `KernelBypass`) sends 5M (`stressCount()` in [`SpscStress.hpp`](../tests/SpscStress.hpp)). x86 and ThreadSanitizer builds keep 100,000–300,000. At the rates GCC showed above, a relaxed `publish()` would damage roughly 14 to 350 of the 5M with 8 slots. With 1024 slots it would damage about one, and often none: a ring that large catches this bug only now and then, even at 5M. So every W03 variant also runs with 8 slots, and so does `KernelBypass` (8 descriptors). For `KernelBypass` the small ring doesn't help natively, though: see below.
+- It's usually rare, and the rate swings widely. With 8 slots, between 1 in 3,000 and 1 in 15 million messages was damaged; with 2 slots, up to 1.7% of a run's messages. With 1024 slots it was about 1 in 10 million or fewer, and 9 of the 12 runs of 100M messages showed nothing at all. A stress test that passes on ARM is evidence, not proof. ThreadSanitizer, which also runs on the ARM runner in CI, found the race on the first run.
+- So a stress test needs millions of messages on ARM. Natively on AArch64 every SPSC stress test (`RingBuffer`, the W03 variants and `KernelBypass`) sends 5M (`stressCount()` in [`SpscStress.hpp`](../tests/SpscStress.hpp)). x86 and ThreadSanitizer builds keep 100,000–300,000. At the GCC rates measured with 8 slots (here and [below](#two-slots-and-the-other-direction)), a relaxed `publish()` would damage roughly 1 to 1,500 of the 5M, so a 5M run catches it in most runs but not all. With 1024 slots it would damage about one, and often none: a ring that large catches this bug only now and then, even at 5M. So every W03 variant also runs with 8 slots, and so does `KernelBypass` (8 descriptors). For `KernelBypass` the small ring doesn't help natively, though: see below.
+- The `Stress.*` tests send 100,000 messages on every build, under the tight and random schedules. Six of the 24 have 2 slots (`ring-tiny`, `v0-tiny`, `v1-tiny`). At the [2-slot rates](#two-slots-and-the-other-direction), a relaxed `publish()` would damage about one message in each of those six at the tight-schedule median (0.9 to 1.3), and 0.1 to 4 with random stalls. The 1024-slot ones would almost never show it. So they catch it only now and then.
 
 **`KernelBypass` shows neither reordering.** [`tests/RelaxedKernelBypass.hpp`](../tests/RelaxedKernelBypass.hpp) breaks one handoff of a descriptor at a time:
 - `nicReceive()` sets `ready` relaxed, so the CPU could see the flag before the packet;
@@ -153,6 +154,26 @@ GCC 13 compiles each to exactly the difference intended (`strb` where the correc
 The likely reason is the layout. `RingBuffer`'s slot and index live on different cache lines, but a descriptor's data and `ready` flag share 8 bytes. That's not measured; what is measured is that this core never let one overtake the other. So the architecture allows both bugs, this widely deployed core doesn't show them, and a stress test can't find them here at any ring size. ThreadSanitizer does: `TSan.CatchesRelaxedKernelBypassReceive` and `TSan.CatchesRelaxedKernelBypassPoll` pass only if it reports the race. It reports the relaxed receive from the first packet, and the relaxed poll once a descriptor is reused (from packet 9 with 8 descriptors, so the small ring still earns its place). Another core, or a descriptor whose data spans more than one cache line, may behave differently.
 
 CI keeps the measurement as a test: `ARM.RelaxedPublishDamagesMessages`, registered for native AArch64 builds without a sanitizer. It runs the 8-slot broken queue in rounds of 10M messages, up to 300M, and passes once a round delivers a damaged message. On the N2 runner it passed 11 of 11 times, taking 0.7–6.3 s. It is the hardware counterpart of `TSan.CatchesRelaxedPublish`. Another ARM core may reorder less often. If it fails there, the hardware didn't show the reordering within 300M messages; it doesn't mean `RingBuffer` is broken.
+
+#### Two slots, and the other direction
+
+[`spsc_stress`](../tests/spsc_stress.cpp) runs the same broken queue with 2 slots. These were measured later on two runner hosts with GCC 13, five runs per row on each. A damaged message is one with a wrong payload word:
+
+| Queue, on Neoverse N2 | Schedule | Messages per run | Host 1 | Host 2 |
+|-----------------------|----------|-----------------:|--------|--------|
+| relaxed `publish()`, 2 slots | tight (busy-spin) | 30M | 27, 277, 1,832, 4,473, 2 | 1,904, 2,055, 387, 32, 19 |
+| relaxed `publish()`, 2 slots | yield | 30M | 12, 539, 4,797, 521,632, 43,750 | 1,646, 93,379, 55,189, 2,037, 1,103 |
+| relaxed `publish()`, 2 slots | random stalls | 3M | 2, 566, 4, 0, 1,619 | 47, 76, 3,976, 131, 113 |
+| relaxed `publish()`, 8 slots (`relaxed_publish_demo … small`) | yield | 30M | 22, 15, 5, 5,735, 10 | 9,369, 910, 1,839, 3,206, 3,967 |
+| correct `RingBuffer`, 2 slots (the control) | tight | 30M | 0 in all 5 | 0 in all 5 |
+| relaxed `consume()`, 2 slots | tight | 30M | 0 in all 5 | 0 in all 5 |
+
+- **The correct 2-slot `RingBuffer` stayed clean.** It differs from the broken queue in more than the release (a plain store instead of `fetch_add`, cached indices). The exact control, the same queue with a release `publish()`, is the 8-slot control row in the first table.
+- **With the threads in lock-step (tight or yield), every run damaged messages:** 20 of 20 with 2 slots, 10 of 10 with 8.
+- **2 slots aren't reliably worse than 8.** Host 1 damaged far more with 2 slots: medians of 277 (tight) and 4,797 (yield), against 15. Host 2 went the other way: 387 and 2,037, against 3,206. Both rings are small enough for the explanation above. Which of the two showed more changed from host to host, and the cause wasn't measured.
+- **The spread is wide.** It ran from 2 to 521,632 per 30M, and that last run is 1.7% of all its messages. Measure over several runs, and on more than one host.
+- **Random stalls between the steps of each hand-off don't hide it:** 9 of 10 runs, with a tenth of the messages.
+- **A relaxed `consume()` damaged no message in 300M on the two hosts,** with 2 slots and the tight schedule only. The Arm architecture allows a store to become visible before an earlier load completes. These runs show only that no overwrite landed inside the consumer's read, not that the core never reorders. So far, only ThreadSanitizer (`TSan.CatchesRelaxedConsume`) has caught that bug on this hardware.
 
 ## Your call: when is `seq_cst` worth it?
 

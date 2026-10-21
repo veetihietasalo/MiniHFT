@@ -110,7 +110,7 @@ ThreadSanitizer already ran the unit tests, and `TSan.CatchesRelaxedPublish` pro
 | `TSan.CatchesRelaxedConsume` | TSan | Passes only if TSan reports the race in a queue whose `consume()` is relaxed ([`tests/RelaxedConsumeRingBuffer.hpp`](../tests/RelaxedConsumeRingBuffer.hpp)), next to the existing relaxed-`publish()` test |
 | `Smoke.<program>`, 12 | sanitizer builds, label `smoke` | Every program with small inputs: `ring_latency` (paced, burst, and with a core that doesn't exist, so a failed pin must still pass), `ring_study` with and without busy work, `ring_bench`, `orderbook_latency`, `gen_itch` → `itch_test` and `itch_replay`, `MiniHFT`, `hw_bench` |
 
-The 24 stress tests take 7 s under TSan. Both `clang-tsan` CI jobs, x86-64 and ARM64, also repeat them 10 times, each repeat with new seeds: 220 runs, 33 s locally.
+The 24 stress tests take 7 s under TSan. Both `clang-tsan` CI jobs, x86-64 and ARM64, also repeat them 10 times, each repeat with new seeds: 240 runs, about 35 s locally.
 
 Every file with an atomic or a thread now has its threads run under TSan:
 
@@ -145,7 +145,7 @@ What that shows:
 
 - **Fences.** TSan doesn't model `std::atomic_thread_fence`. Correct fence-based code would be reported as a race, and TSan couldn't tell a right fence from a wrong one. Nothing in the code uses a fence today; keep it that way, or add a different check along with the fence.
 - **Ordering between atomics only.** A sleep/wake handshake that needs `seq_cst` but uses acquire/release, or a seqlock, can be wrong with no plain-memory race for TSan to report. No such protocol exists here yet. A memory-model checker would be needed for one.
-- **Weakly ordered hardware.** TSan reasons about happens-before, not about what a CPU actually reorders, and everything above ran on x86. The ARM64 CI jobs close that gap: there the stress tests run natively on an Arm Neoverse N2, where a relaxed `publish()` really does deliver damaged messages ([memory_ordering.md](memory_ordering.md#measured-on-arm)).
+- **Weakly ordered hardware.** TSan reasons about happens-before, not about what a CPU actually reorders, and everything above ran on x86. The ARM64 CI jobs close part of that gap: there the stress tests run natively on an Arm Neoverse N2, where a relaxed `publish()` really does deliver damaged messages ([memory_ordering.md](memory_ordering.md#measured-on-arm)). A relaxed `consume()` damaged nothing there in 300M messages ([2 slots](memory_ordering.md#two-slots-and-the-other-direction)), so for that bug TSan is still the only check.
 - **Executions that don't happen,** as the off-by-one shows: 14 of 20 is not 20 of 20.
 
 ## Benchmark baselines

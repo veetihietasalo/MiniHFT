@@ -89,8 +89,9 @@ constexpr QueueEntry kQueues[] = {
     {"v2-tiny-batch", stress<RingV2<StressMessage, 4, 4>>, "RingV2, 4 slots, batch = size"},
     {"kernel-bypass", stressKernelBypass<KernelBypass>, "KernelBypass descriptor ring, 1024 descriptors"},
     {"kernel-bypass-tiny", stressKernelBypass<BasicKernelBypass<8>>, "KernelBypass descriptor ring, 8 descriptors"},
-    // Deliberately broken: under ThreadSanitizer, which should report a race; natively on ARM, to
-    // measure how often the hardware reordering actually damages a message.
+    // Deliberately broken. ThreadSanitizer should report a race in each. Natively on ARM, relaxed-publish
+    // also delivers damaged messages (docs/memory_ordering.md); the others, kb-relaxed-* included, show
+    // nothing there.
     {"relaxed-publish", stress<RelaxedPublishRingBuffer<StressMessage, 1024>>, "BROKEN: publish() relaxed, 1024 slots"},
     {"relaxed-publish-tiny", stress<RelaxedPublishRingBuffer<StressMessage, 2>>, "BROKEN: publish() relaxed, 2 slots"},
     {"relaxed-consume", stress<RelaxedConsumeRingBuffer<StressMessage, 1024>>, "BROKEN: consume() relaxed, 1024 slots"},

@@ -38,8 +38,8 @@ struct StressResult {
 };
 
 // How many messages a stress test that sends `shortRun` elsewhere sends here. Natively on AArch64
-// the hardware really reorders stores, but a missing release damaged only 1 in 6,000 to 1 in
-// 15 million messages there (docs/memory_ordering.md), so those runs send 5M. x86 never reorders
+// the hardware really reorders stores, but a missing release can damage as few as 1 in 15 million
+// messages there (docs/memory_ordering.md), so those runs send 5M. x86 never reorders
 // these stores, and ThreadSanitizer finds a missing edge without volume: both keep the short run.
 #if defined(__SANITIZE_THREAD__) // GCC
 #define MINIHFT_STRESS_UNDER_TSAN 1
