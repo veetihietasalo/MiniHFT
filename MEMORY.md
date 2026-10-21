@@ -18,7 +18,8 @@ Durable context for agent sessions on MiniHFT: facts that are expensive to redis
   - Sanitizer builds skip the compile-fail tests and add 12 `Smoke.*`: 111 on clang-tsan (both architectures, with `TSan.CatchesRelaxedConsume`), 109 on clang-asan-ubsan.
 - **Still open:**
   - `Network.hpp` is Winsock-only (W09).
-  - The SPSC stress tests send 5M messages natively on AArch64 (`stressCount()` in `tests/SpscStress.hpp`). x86 and TSan keep 100k–300k. With 1024 slots, even 5M messages catch a relaxed `publish()` only now and then; only the 8-slot rings catch it reliably, so every W03 variant also runs with 8 slots. `KernelBypass` (ring fixed at 1024) has no small-ring test.
+  - The SPSC unit stress tests send 5M messages natively on AArch64 (`stressCount()` in `tests/SpscStress.hpp`, since PR #13). x86 and TSan keep 100k–300k. With 1024 slots, even 5M messages catch a relaxed `publish()` only now and then; only the 8-slot rings catch it reliably, so every W03 variant also runs with 8 slots. `KernelBypass` (ring fixed at 1024) has no small-ring test.
+  - The `Stress.*` ctests (`spsc_stress`) send a fixed 100k messages on every build, ARM included (`MINIHFT_STRESS_MESSAGES`, not `stressCount()`). How often their 2-slot queues show a relaxed `publish()` on N2 is unmeasured: `spsc_stress relaxed-publish-tiny tight 30000000` in a temporary arm64 CI step would tell.
 
 ## Decisions not to undo (measured)
 
@@ -52,4 +53,5 @@ Durable context for agent sessions on MiniHFT: facts that are expensive to redis
 
 - **PRs** merge as merge commits ("Merge pull request #N …"). Work on `venomity/*` branches.
 - **Commits:** imperative subject; body says what was measured and why.
+- **Detecting ThreadSanitizer in code:** GCC 13 sets `__SANITIZE_THREAD__`; Clang 18 doesn't, it only answers `__has_feature(thread_sanitizer)`. Check both, as `tests/SpscStress.hpp` does.
 - **Docs:** state measured numbers with the machine, compiler and count; show the failing test before the fix. x86 behaviour of shared code must stay byte-identical when porting (verify by diffing `-S` output).
