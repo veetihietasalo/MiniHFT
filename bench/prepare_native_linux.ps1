@@ -6,15 +6,15 @@
 .DESCRIPTION
     Does the Windows side, in this order:
       1. Checks: UEFI firmware, Secure Boot, BitLocker on C:, and every disk with its partitions.
-         Stops if C: is encrypted without a recovery password.
+         Stops if C: is encrypted with key protectors but no recovery password.
       2. BitLocker: if C: is encrypted, saves its recovery password to the output folder. Installing a second boot
          loader can make Windows ask for it at the next boot. With -SuspendBitLocker, protection
          is also suspended for the next 3 reboots, which covers the install. It doesn't make it
          safe to boot Windows through GRUB later: start Windows from the firmware boot menu.
       3. Turns off Fast Startup. With it on, Windows hibernates instead of shutting down, and its
          partitions stay locked while Linux runs.
-      4. -ShrinkGB N: shrinks C: by N GB, leaving unallocated space for the installer. Skip this
-         if Ubuntu gets a drive of its own.
+      4. -ShrinkGB N: shrinks C: by N GB, leaving unallocated space for the installer, unless the disk
+         already has that much unallocated (a rerun). Skip this if Ubuntu gets a drive of its own.
       5. Downloads the newest Ubuntu Server ISO of -Release and checks it against Ubuntu's
          SHA256SUMS. A file that's already there and matches is not downloaded again.
       6. Installs Rufus with winget if it's missing and opens it, to write the ISO to a USB stick.
@@ -48,6 +48,8 @@ param(
 
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue" # Invoke-WebRequest is many times slower with its progress bar
+# Older Windows PowerShell 5.1 builds offer only SSL 3 and TLS 1.0, and releases.ubuntu.com accepts TLS 1.2 and 1.3.
+[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 # -WhatIf:$false: the folder and the files saved in it (recovery password, checksums) change nothing
 # on the system, and a dry run needs them too.
 New-Item -ItemType Directory -Force -Path $OutDir -WhatIf:$false | Out-Null
@@ -74,8 +76,8 @@ try {
 
 Section "BitLocker on C:"
 # The CIM class works on Home editions too (device encryption) and doesn't depend on the display language.
-# Decide on encryption, not protection: a suspended volume reports ProtectionStatus 0 but is still
-# encrypted, and protection comes back by itself after the suspended reboots.
+# Decide on encryption, not protection: a suspended volume, or one waiting for activation, reports
+# ProtectionStatus 0 but is still encrypted.
 $volume = Get-CimInstance -Namespace "root\CIMV2\Security\MicrosoftVolumeEncryption" -ClassName Win32_EncryptableVolume `
     -Filter "DriveLetter = 'C:'" -ErrorAction SilentlyContinue
 $encrypted = $false
@@ -88,7 +90,16 @@ if (-not $volume) {
 } elseif (-not $encrypted) {
     Write-Host "C: is not encrypted."
 } else {
-    Write-Host "C: is encrypted, protection $(if ($volume.ProtectionStatus -eq 1) { 'on' } else { 'suspended (it comes back by itself)' })."
+    # No key protectors at all: device encryption waiting for activation, which a local account leaves in
+    # place. The key is stored in the clear, so nothing can ask for a recovery password. -1 = couldn't tell.
+    $protectorList = Invoke-CimMethod -InputObject $volume -MethodName GetKeyProtectors -ErrorAction SilentlyContinue
+    $protectorCount = if ($protectorList -and $protectorList.ReturnValue -eq 0) { @($protectorList.VolumeKeyProtectorID | Where-Object { $_ }).Count } else { -1 }
+    $clearKey = $protectorCount -eq 0 -and $volume.ProtectionStatus -ne 1
+    Write-Host "C: is encrypted, protection $(if ($volume.ProtectionStatus -eq 1) { 'on' } elseif ($clearKey) { 'off: waiting for activation, with no key protectors' } else { 'suspended' })."
+}
+if ($encrypted -and $clearKey) {
+    Write-Host "There's no recovery password to save yet. Signing in with a Microsoft account later adds one, and from then on BitLocker can ask for it."
+} elseif ($encrypted) {
     $keyFile = Join-Path $OutDir "bitlocker-recovery-C.txt"
     # Home editions may lack the BitLocker module; manage-bde is on every edition.
     $haveModule = [bool](Get-Command Get-BitLockerVolume -ErrorAction SilentlyContinue)
@@ -104,7 +115,7 @@ if (-not $volume) {
     }
     $passwords | Set-Content -Path $keyFile -Encoding UTF8 -WhatIf:$false
     Write-Host "Recovery password saved to $keyFile"
-    $copyOff = "Copy $keyFile off this machine (phone, password manager) before you install: when Windows asks for it, C: is locked. It's also at https://account.microsoft.com/devices/recoverykey if the PC is linked to a Microsoft account."
+    $copyOff = "Copy $keyFile off this machine (phone, password manager) before you install, then delete it here: when Windows asks for it, C: is locked, and on this PC it only helps whoever copies the disk. It's also at https://account.microsoft.com/devices/recoverykey if the PC is linked to a Microsoft account."
     Write-Warning $copyOff
     $warnings.Add($copyOff)
     if ($SuspendBitLocker -and $PSCmdlet.ShouldProcess("C:", "Suspend BitLocker for 3 reboots")) {
@@ -120,20 +131,33 @@ if (-not $volume) {
 
 Section "Disks"
 $disks = Get-Disk | Sort-Object Number
-$disks | Format-Table -AutoSize Number, FriendlyName, SerialNumber, BusType, PartitionStyle,
+# The columns that say which disk holds Windows come first: a table wider than the console loses its last
+# columns. No serial number: for NVMe drives Windows shows an EUI-64 here, not the serial the installer shows.
+$disks | Format-Table -AutoSize Number,
+    @{ n = "Windows"; e = { if ($_.IsBoot -or $_.IsSystem) { "yes" } else { "" } } },
+    @{ n = "Letters"; e = { (Get-Partition -DiskNumber $_.Number -ErrorAction SilentlyContinue | Where-Object DriveLetter |
+        ForEach-Object { "$($_.DriveLetter):" }) -join " " } },
+    FriendlyName,
     @{ n = "SizeGB"; e = { [math]::Round($_.Size / 1GB) } },
     @{ n = "FreeGB"; e = { [math]::Round($_.LargestFreeExtent / 1GB) } },
     @{ n = "Partitions"; e = { $_.NumberOfPartitions } },
-    @{ n = "Letters"; e = { (Get-Partition -DiskNumber $_.Number -ErrorAction SilentlyContinue | Where-Object DriveLetter |
-        ForEach-Object { "$($_.DriveLetter):" }) -join " " } },
-    @{ n = "Windows"; e = { if ($_.IsBoot -or $_.IsSystem) { "yes" } else { "" } } } | Out-Host
+    BusType, PartitionStyle | Out-Host
 $others = $disks | Where-Object { -not $_.IsBoot -and -not $_.IsSystem -and $_.BusType -ne "USB" }
-$empty = $others | Where-Object { $_.NumberOfPartitions -eq 0 -or $_.PartitionStyle -eq "RAW" }
+# Disk Management gives a new GPT disk a 16 MB Microsoft Reserved partition, so that one doesn't count.
+function Get-DataPartitionCount($disk) {
+    @(Get-Partition -DiskNumber $disk.Number -ErrorAction SilentlyContinue | Where-Object Type -ne "Reserved").Count
+}
+$empty = $others | Where-Object { $_.PartitionStyle -ne "RAW" -and (Get-DataPartitionCount $_) -eq 0 }
 if ($empty) {
     Write-Host "Empty disks: $(($empty | ForEach-Object { "#$($_.Number) $($_.FriendlyName), $([math]::Round($_.Size / 1GB)) GB" }) -join '; ')."
     Write-Host "An empty drive of its own is the safest place for Ubuntu: pick it in the installer by its size and model, and leave -ShrinkGB at 0."
 }
-$withData = $others | Where-Object { $_.NumberOfPartitions -gt 0 -and $_.PartitionStyle -ne "RAW" }
+# RAW only means no partition table Windows recognizes. A disk used whole by Linux (LUKS, LVM, ext4) looks the same.
+$raw = $others | Where-Object { $_.PartitionStyle -eq "RAW" }
+if ($raw) {
+    Write-Host "Disks with no partition table Windows recognizes: $(($raw | ForEach-Object { "#$($_.Number) $($_.FriendlyName), $([math]::Round($_.Size / 1GB)) GB" }) -join '; '). Either new, or used whole by another OS: make sure nothing on it is needed before installing there."
+}
+$withData = $others | Where-Object { $_.PartitionStyle -ne "RAW" -and (Get-DataPartitionCount $_) -gt 0 }
 if ($withData) {
     Write-Host "Other disks with partitions on them: $(($withData | ForEach-Object { "#$($_.Number) $($_.FriendlyName)" }) -join '; '). Installing Ubuntu on one of these with 'Use an entire disk' erases it."
 }
@@ -154,20 +178,26 @@ if ((Get-ItemProperty -Path $powerKey -Name HiberbootEnabled -ErrorAction Silent
 if ($ShrinkGB -gt 0) {
     Section "Shrink C: by $ShrinkGB GB"
     $partition = Get-Partition -DriveLetter C
-    $supported = Get-PartitionSupportedSize -DriveLetter C
-    $newSize = $partition.Size - [int64]$ShrinkGB * 1GB
-    $freeAfter = (Get-Volume -DriveLetter C).SizeRemaining - [int64]$ShrinkGB * 1GB
-    if ($newSize -lt $supported.SizeMin) {
-        throw "C: can shrink by at most $([math]::Floor(($partition.Size - $supported.SizeMin) / 1GB)) GB (files near the end of the volume stop it). Ask for less."
-    }
-    if ($freeAfter -lt 30GB) {
-        throw "That would leave C: with $([math]::Round($freeAfter / 1GB)) GB free. Keep at least 30 GB for Windows updates."
-    }
-    $question = "Shrink C: from $([math]::Round($partition.Size / 1GB)) GB to $([math]::Round($newSize / 1GB)) GB?"
-    if ($PSCmdlet.ShouldProcess("C:", "Resize to $([math]::Round($newSize / 1GB)) GB") -and
-        $PSCmdlet.ShouldContinue($question, "Shrink C:")) {
-        Resize-Partition -DriveLetter C -Size $newSize
-        Write-Host "Done: $ShrinkGB GB unallocated after C:. In the installer, put Ubuntu in that free space."
+    # A rerun with the same -ShrinkGB (after a failed download, say) must not take the space a second time.
+    $alreadyFree = (Get-Disk -Number $partition.DiskNumber).LargestFreeExtent
+    if ($alreadyFree -ge [int64]$ShrinkGB * 1GB) {
+        Write-Host "The Windows disk already has $([math]::Round($alreadyFree / 1GB)) GB unallocated, so C: stays as it is. In the installer, put Ubuntu in that free space."
+    } else {
+        $supported = Get-PartitionSupportedSize -DriveLetter C
+        $newSize = $partition.Size - [int64]$ShrinkGB * 1GB
+        $freeAfter = (Get-Volume -DriveLetter C).SizeRemaining - [int64]$ShrinkGB * 1GB
+        if ($newSize -lt $supported.SizeMin) {
+            throw "C: can shrink by at most $([math]::Floor(($partition.Size - $supported.SizeMin) / 1GB)) GB (files near the end of the volume stop it). Ask for less."
+        }
+        if ($freeAfter -lt 30GB) {
+            throw "That would leave C: with $([math]::Round($freeAfter / 1GB)) GB free. Keep at least 30 GB for Windows updates."
+        }
+        $question = "Shrink C: from $([math]::Round($partition.Size / 1GB)) GB to $([math]::Round($newSize / 1GB)) GB?"
+        if ($PSCmdlet.ShouldProcess("C:", "Resize to $([math]::Round($newSize / 1GB)) GB") -and
+            $PSCmdlet.ShouldContinue($question, "Shrink C:")) {
+            Resize-Partition -DriveLetter C -Size $newSize
+            Write-Host "Done: $ShrinkGB GB unallocated after C:. In the installer, put Ubuntu in that free space."
+        }
     }
 }
 
@@ -239,9 +269,14 @@ Write-Host @"
    board's boot menu (often F8, F11 or F12). Pick the UEFI entry of the stick.
 2. Installer: Ubuntu Server (not minimized). Enable "Install OpenSSH server".
    Storage, on a drive of its own: "Use an entire disk" on THAT drive; it erases everything on it.
-   Pick it by size and model, which the table above shows for every disk.
-   Storage, next to Windows on one disk: "Custom storage layout", put an ext4 partition mounted at /
-   in the free space, and keep the existing EFI partition as it is (don't format it).
+   Pick it by size and model, which the table above shows for every disk. Before you confirm, the
+   installer lists the devices it will format: the Windows drive must not be among them.
+   Storage, next to Windows on one disk: the installer shows the free space only with a boot flag.
+   At the stick's GRUB menu, highlight "Try or Install Ubuntu Server", press e, and on the
+   "linux /casper/vmlinuz" line type subiquity-storage-version=2 just before "---" (Ctrl+X boots).
+   Then "Custom storage layout", the disk's "free space" row, "Add GPT Partition": ext4, mounted
+   at /. The existing EFI partition becomes /boot/efi by itself. Don't edit it or any Windows
+   partition, and don't reformat the disk.
 $(if ($encrypted) {
 "3. Start Windows from your board's boot menu, not from GRUB. With BitLocker on, booting Windows
    through GRUB changes what the TPM measures, and Windows asks for the recovery password."
