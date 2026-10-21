@@ -29,7 +29,7 @@ Per-event timing can't answer this: a ~10 ns timer and histogram buckets 1.6% wi
 | 1000 | MSVC 19.51 | 12.8–13.7 | 14.7–14.8 | 16.9–17.1 |
 | 1000 | GCC 13 | 9.6–10.0 | 13.1 | 14.4–14.5 |
 
-- **The template listener costs 1–3 ns per event.** That's the before/after top-of-book comparison plus the listener's own counting, and it's work any strategy hook has to do.
+- **The template listener costs 1–3.5 ns per event**, the top end on GCC 13. That's the before/after top-of-book comparison plus the listener's own counting, and it's work any strategy hook has to do.
 - **The virtual call adds another 1.3–2.3 ns.** That's the indirect call, and the lost chance to inline and optimize across it.
 - **Both are small next to a real day.** The median book update on the NASDAQ replay is 131 ns ([order_book.md](order_book.md)), so even the virtual hook adds about 1–2%. The full 30 Dec 2019 day, replayed with the template listener attached, confirms it:
   - **124,767,189 top-of-book changes** delivered, roughly one for every two order messages;

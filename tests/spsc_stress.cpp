@@ -85,8 +85,10 @@ constexpr QueueEntry kQueues[] = {
     {"v2-batch4", stress<RingV2<StressMessage, 1024, 4>>, "RingV2, 1024 slots, publishes every 4th message"},
     {"v2-tiny-batch", stress<RingV2<StressMessage, 4, 4>>, "RingV2, 4 slots, batch = size"},
     {"kernel-bypass", stressKernelBypass, "KernelBypass descriptor ring, 1024 descriptors"},
-    // Deliberately broken. ThreadSanitizer should report a race in each. Natively on ARM, relaxed-publish
-    // also delivers damaged messages (docs/memory_ordering.md); the others show nothing there.
+    // Deliberately broken. ThreadSanitizer should report a race in each relaxed queue, and in off-by-one
+    // only in a run where a claim finds the queue full. The off-by-one queues overwrite messages on any
+    // CPU. Natively on ARM, relaxed-publish-tiny delivers damaged messages too (the 1024-slot one only now
+    // and then; docs/memory_ordering.md), and relaxed-consume-tiny showed none in 300M.
     {"relaxed-publish", stress<RelaxedPublishRingBuffer<StressMessage, 1024>>, "BROKEN: publish() relaxed, 1024 slots"},
     {"relaxed-publish-tiny", stress<RelaxedPublishRingBuffer<StressMessage, 2>>, "BROKEN: publish() relaxed, 2 slots"},
     {"relaxed-consume", stress<RelaxedConsumeRingBuffer<StressMessage, 1024>>, "BROKEN: consume() relaxed, 1024 slots"},
