@@ -271,8 +271,12 @@ Write-Host @"
    Storage, on a drive of its own: "Use an entire disk" on THAT drive; it erases everything on it.
    Pick it by size and model, which the table above shows for every disk. Before you confirm, the
    installer lists the devices it will format: the Windows drive must not be among them.
-   Storage, next to Windows on one disk: "Custom storage layout", put an ext4 partition mounted at /
-   in the free space, and keep the existing EFI partition as it is (don't format it).
+   Storage, next to Windows on one disk: the installer shows the free space only with a boot flag.
+   At the stick's GRUB menu, highlight "Try or Install Ubuntu Server", press e, and on the
+   "linux /casper/vmlinuz" line type subiquity-storage-version=2 just before "---" (Ctrl+X boots).
+   Then "Custom storage layout", the disk's "free space" row, "Add GPT Partition": ext4, mounted
+   at /. The existing EFI partition becomes /boot/efi by itself. Don't edit it or any Windows
+   partition, and don't reformat the disk.
 $(if ($encrypted) {
 "3. Start Windows from your board's boot menu, not from GRUB. With BitLocker on, booting Windows
    through GRUB changes what the TPM measures, and Windows asks for the recovery password."
