@@ -48,25 +48,6 @@ jobs:
       - name: Test
         run: ctest --preset ${{ matrix.preset }}
 
-      # TEMPORARY: 2-slot relaxed-publish rate on Neoverse N2, for docs/memory_ordering.md.
-      - name: Relaxed-publish experiment
-        if: matrix.os == 'ubuntu-24.04-arm' && matrix.preset == 'gcc-release'
-        shell: bash
-        run: |
-          b=build/gcc-release
-          for cmd in "$b/spsc_stress relaxed-publish-tiny tight 30000000" \
-                     "$b/spsc_stress relaxed-publish-tiny yield 30000000" \
-                     "$b/spsc_stress relaxed-publish-tiny random 3000000" \
-                     "$b/relaxed_publish_demo 30000000 small" \
-                     "$b/spsc_stress ring-tiny tight 30000000" \
-                     "$b/spsc_stress relaxed-consume-tiny tight 30000000"; do
-            for run in 1 2 3 4 5; do
-              start=$(date +%s%N)
-              out=$(timeout 300 $cmd | tail -1 || true)
-              printf '%-62s %6d ms  %s\n' "${cmd#$b/}" $(( ($(date +%s%N) - start) / 1000000 )) "$out"
-            done
-          done
-
       # More schedules for the lock-free code: each repeat picks new seeds, and a failure prints its seed.
       - name: Stress the lock-free code (10 repeats)
         if: matrix.preset == 'clang-tsan'

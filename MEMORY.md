@@ -19,7 +19,7 @@ Durable context for agent sessions on MiniHFT: facts that are expensive to redis
 - **Still open:**
   - `Network.hpp` is Winsock-only (W09).
   - The SPSC unit stress tests send 5M messages natively on AArch64 (`stressCount()` in `tests/SpscStress.hpp`, since PR #13). x86 and TSan keep 100k–300k. With 1024 slots, even 5M messages catch a relaxed `publish()` only now and then; only the 8-slot rings catch it reliably, so every W03 variant also runs with 8 slots. `KernelBypass` (ring fixed at 1024) has no small-ring test.
-  - The `Stress.*` ctests (`spsc_stress`) send a fixed 100k messages on every build, ARM included (`MINIHFT_STRESS_MESSAGES`, not `stressCount()`). How often their 2-slot queues show a relaxed `publish()` on N2 is unmeasured: `spsc_stress relaxed-publish-tiny tight 30000000` in a temporary arm64 CI step would tell.
+  - The `Stress.*` ctests (`spsc_stress`) send a fixed 100k messages on every build, ARM included (`MINIHFT_STRESS_MESSAGES`, not `stressCount()`). At the measured 2-slot rates (below), a relaxed `publish()` damages about 1 message per 100k at the median, so they catch it only now and then. Giving them `stressCount()`'s 5M on native ARM would make them reliable; not done.
 
 ## Decisions not to undo (measured)
 
@@ -36,6 +36,8 @@ Durable context for agent sessions on MiniHFT: facts that are expensive to redis
   - Release control: never damaged.
   - The damage rate varies roughly 10× between runner hosts.
   - The reordering is the CPU's: GCC emits the slot `stp`s before `__aarch64_ldadd8_relax`.
+- **2 slots (2026-10-21, one host, `spsc_stress relaxed-publish-tiny`, 5 runs of 30M):** damage in every run with the tight and yield schedules. The medians were 277 and 4,797 messages, against 15 for 8 slots on the same host; one yield run damaged 1.7% of its messages. With random stalls, damage showed in 4 of 5 runs of 3M. The correct 2-slot `RingBuffer` stayed at 0.
+- **A relaxed `consume()` never showed on N2:** 0 damaged in 150M messages with 2 slots. Only TSan catches that bug on this hardware.
 - **Busy-spinning instead of yielding did not raise the damage rate.** Ring size did. Don't retry the spin variant.
 
 ## Working in the cloud sandbox
