@@ -11,6 +11,11 @@ The real-day figures so far (131 ns p50 per update) come from WSL2. Measure a ne
 ## Install
 
 - **OS:** Ubuntu Server 26.04 LTS, or 24.04 with the HWE kernel. Leave the desktop out, since fewer background processes means a quieter tail. Install it on its own drive or partition so that Windows stays bootable.
+- **The Windows side:** [`bench/prepare_native_linux.ps1`](../bench/prepare_native_linux.ps1), from an administrator PowerShell. It checks for UEFI, saves the BitLocker recovery password, turns off Fast Startup, downloads and verifies the newest Ubuntu Server ISO, and opens Rufus to write it to a USB stick. `-ShrinkGB N` makes room on the Windows disk, and `-WhatIf` shows every change first:
+  ```powershell
+  powershell -ExecutionPolicy Bypass -File bench\prepare_native_linux.ps1 -WhatIf
+  powershell -ExecutionPolicy Bypass -File bench\prepare_native_linux.ps1 -SuspendBitLocker
+  ```
 - **Packages:**
   ```bash
   sudo apt install build-essential cmake ninja-build clang git linux-tools-common linux-tools-generic
