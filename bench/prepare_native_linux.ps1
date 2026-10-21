@@ -46,7 +46,9 @@ param(
 
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue" # Invoke-WebRequest is many times slower with its progress bar
-New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
+# -WhatIf:$false: the folder and the files saved in it (recovery password, checksums) change nothing
+# on the system, and a dry run needs them too.
+New-Item -ItemType Directory -Force -Path $OutDir -WhatIf:$false | Out-Null
 $warnings = [System.Collections.Generic.List[string]]::new()
 function Section([string]$title) { Write-Host "`n== $title" -ForegroundColor Cyan }
 
@@ -77,10 +79,10 @@ if (-not $bitLockerOn) {
     if ($haveModule) {
         $passwords = (Get-BitLockerVolume -MountPoint "C:").KeyProtector | Where-Object KeyProtectorType -eq "RecoveryPassword"
         $passwords | ForEach-Object { "Key ID $($_.KeyProtectorId)`r`nRecovery password $($_.RecoveryPassword)`r`n" } |
-            Set-Content -Path $keyFile -Encoding ASCII
+            Set-Content -Path $keyFile -Encoding ASCII -WhatIf:$false
     } else {
         $passwords = manage-bde -protectors -get C: -Type RecoveryPassword
-        $passwords | Set-Content -Path $keyFile -Encoding UTF8
+        $passwords | Set-Content -Path $keyFile -Encoding UTF8 -WhatIf:$false
         if ($LASTEXITCODE -ne 0) { $passwords = $null }
     }
     if (-not $passwords) {

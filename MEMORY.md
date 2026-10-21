@@ -36,8 +36,8 @@ Durable context for agent sessions on MiniHFT: facts that are expensive to redis
   - Release control: never damaged.
   - The damage rate varies roughly 10× between runner hosts.
   - The reordering is the CPU's: GCC emits the slot `stp`s before `__aarch64_ldadd8_relax`.
-- **2 slots (2026-10-21, one host, `spsc_stress relaxed-publish-tiny`, 5 runs of 30M):** damage in every run with the tight and yield schedules. The medians were 277 and 4,797 messages, against 15 for 8 slots on the same host; one yield run damaged 1.7% of its messages. With random stalls, damage showed in 4 of 5 runs of 3M. The correct 2-slot `RingBuffer` stayed at 0.
-- **A relaxed `consume()` never showed on N2:** 0 damaged in 150M messages with 2 slots. Only TSan catches that bug on this hardware.
+- **2 slots (2026-10-21, two hosts, `spsc_stress relaxed-publish-tiny`, 5 runs of 30M each):** damage in every tight and yield run, 20 of 20. 2 slots aren't reliably worse than 8: host 1 had medians of 277 and 4,797 against 15 for 8 slots, host 2 had 387 and 2,037 against 3,206. One yield run damaged 1.7% of its messages. Random stalls: damage in 9 of 10 runs of 3M. The correct 2-slot `RingBuffer` stayed at 0.
+- **A relaxed `consume()` never showed on N2:** 0 damaged in 300M messages with 2 slots on two hosts. Only TSan catches that bug on this hardware.
 - **Busy-spinning instead of yielding did not raise the damage rate.** Ring size did. Don't retry the spin variant.
 
 ## Working in the cloud sandbox
