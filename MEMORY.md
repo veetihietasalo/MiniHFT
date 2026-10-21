@@ -17,10 +17,11 @@ Durable context for agent sessions on MiniHFT: facts that are expensive to redis
   - Plus fuzz, clang-tidy (now with the Clang Static Analyzer, about 3 min) and `bench-compare`, which only reports and never fails.
   - Both clang-tsan jobs run the `stress` label 10 more times with new seeds.
   - The x86 job names are unchanged, so any required checks still match.
+- **Networking (2026-10-21):** a MoldUDP64 multicast feed handler, `mold_send` → `mold_recv` ([`docs/networking.md`](docs/networking.md)). POSIX only (`UdpSocket.hpp`); `Network.hpp` is still the Winsock TCP demo.
 - **Test counts:**
-  - 147 on gcc-release x86, gcc-debug-stl and MSVC: 94 unit, 28 `CompileFail.*`, 24 `Stress.*`, and `BenchTools.ComparePy`.
-  - 148 on gcc-release arm64, which adds `ARM.RelaxedPublishDamagesMessages`.
-  - Sanitizer builds skip the 28 compile-fail and 8 zero-allocation tests and add 12 `Smoke.*`: 123 on clang-asan-ubsan, and 127 on clang-tsan (both architectures), which also has four `TSan.CatchesRelaxed*` tests (`Publish`, `Consume`, and both `KernelBypass` handoffs).
+  - 165 on gcc-release x86 and gcc-debug-stl: 111 unit (17 of them `MoldUdp64*`), 28 `CompileFail.*`, 24 `Stress.*`, `BenchTools.ComparePy` and `Multicast.MoldUdp64Loopback`. MSVC: 164 (no multicast test on Windows).
+  - 166 on gcc-release arm64, which adds `ARM.RelaxedPublishDamagesMessages`.
+  - Sanitizer builds skip the 28 compile-fail and 8 zero-allocation tests and add 12 `Smoke.*`: 141 on clang-asan-ubsan, and 145 on clang-tsan (both architectures), which also has four `TSan.CatchesRelaxed*` tests (`Publish`, `Consume`, and both `KernelBypass` handoffs).
 - **Still open:**
   - `Network.hpp` is Winsock-only (W09).
   - The SPSC unit stress tests send 5M messages natively on AArch64 (`stressCount()` in `tests/SpscStress.hpp`, since PR #13). x86 and TSan keep 100k–300k. With 1024 slots, even 5M messages catch a relaxed `publish()` only now and then. The 8-slot rings catch it in most runs (1 to 1,500 damaged per 5M at the GCC rates measured on the broken `fetch_add` queue; a relaxed plain store's rate wasn't measured), so every W03 variant and `KernelBypass` (`BasicKernelBypass<8>`, since PR #17) also run with 8 slots.
@@ -32,6 +33,8 @@ Durable context for agent sessions on MiniHFT: facts that are expensive to redis
 - **`compare.py` gates only the central metrics** (`min`, `p50`, `mean_per_*`, throughput). With ~120 metrics and 3 runs a side, noise separates a few tail metrics in every comparison: a comment-only change "regressed" `p99.99` by +288%. Use 3 or more runs, and read tails by hand.
 - **UBSan `unsigned-integer-overflow` stays off.** All 66 reports were deliberate wrapping (hashes, checksums, `npos + 1`). The list is in CMakeLists.txt.
 - **libstdc++ debug mode doesn't allocate on the hot paths.** The zero-allocation tests pass under gcc-debug-stl, so they stay in that preset.
+
+- **The MoldUDP64 `Sequencer` holds packets beyond a gap** and gives up a gap only when the caller says so (`mold_recv`: after `--gap-wait-us`, and only with every socket drained), one gap at a time. Skipping ahead at once made the B feed useless; a wall-clock wait without draining gave up gaps whose filling packet sat unread after a deschedule. Both were found by `Multicast.MoldUdp64Loopback`, the second only under CPU load. Don't simplify either back.
 
 ## Hardware facts (measured)
 
@@ -57,11 +60,14 @@ Durable context for agent sessions on MiniHFT: facts that are expensive to redis
   - The lead rebuilds the merged tree against the real GoogleTest before trusting any result. Benchmark-sensitive fixes get a `compare.py` A/B run.
 - **Worktree agents branch from the local `origin/main`.** Run `git fetch origin main` before spawning them, or they start from a stale base.
 - **AArch64 cross build:** install `g++-aarch64-linux-gnu qemu-user` and use a toolchain file with `CMAKE_CROSSCOMPILING_EMULATOR "qemu-aarch64;-L;/usr/aarch64-linux-gnu"`. qemu runs on the x86 host's memory order, so it proves the build only. Exclude `ARM.*` tests there.
+- **Multicast in the sandbox:** `lo` has no MULTICAST flag; `eth0` has. Send through the default route with `IP_MULTICAST_LOOP` on (UdpSocket's default) and a receiver on the same host gets a copy. Linux grants up to twice `rmem_max` for SO_RCVBUF (8 MB here, as root).
+- **Text to speech (the owner listens to lessons):** `pip install kokoro-onnx soundfile`, then from Hugging Face `onnx-community/Kokoro-82M-v1.0-ONNX`: `onnx/model.onnx` and `voices/<name>.bin` (raw float32, reshape to (-1, 1, 256), pack into an .npz). Voice `af_heart` by default. Piper's lessac voice was judged too poor. Output MP3s go in the scratchpad and to the owner with SendUserFile.
 - **Weak-memory experiments need the real runner.** Put a temporary CI step on the arm64 job and read its output with the GitHub MCP `get_job_logs` (`return_content: true`). Remove the step before merge.
   - Each push lands the job on a new host, and one host's result can reverse on the next (see Hardware facts). Run on at least two: push again with the temporary step still in place.
 
 ## Conventions
 
+- **Teach while building (the owner's standing request, 2026-10-21).** Explain each decision as you make it, and why the alternatives lost; compare the C++ with how Java does the same thing; tie it to what a quant developer needs to know. Offer an audio version of longer lessons (see the TTS note above).
 - **PRs** merge as merge commits ("Merge pull request #N …"). Work on `venomity/*` branches.
 - **Commits:** imperative subject; body says what was measured and why.
 - **Detecting ThreadSanitizer in code:** GCC 13 sets `__SANITIZE_THREAD__`; Clang 18 doesn't, it only answers `__has_feature(thread_sanitizer)`. Check both, as `tests/SpscStress.hpp` does.

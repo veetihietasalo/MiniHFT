@@ -1,20 +1,34 @@
 // Writes a small ITCH 5.0 file, market_data.itch, in the format of NASDAQ's sample files:
 // each message is preceded by its length as a 2-byte big-endian integer.
 // itch_test replays it into an order book.
+//
+// Usage: gen_itch [--orders=N] [--out=market_data.itch]
+//   --orders=N  also N rounds of order flow during the session: an add, and once 100 orders are
+//               resting, the oldest leaves (deleted or fully executed, alternately). Every event
+//               refers to a live order, so a book builder must report no unknown references. A
+//               long, consistent feed for mold_send and the networking measurements.
 
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
+#include <cstring>
 
 #include "ItchMessages.hpp"
 
-int main() {
-    std::FILE* file = std::fopen("market_data.itch", "wb");
+int main(int argc, char** argv) {
+    const char* path = "market_data.itch";
+    unsigned long long orders = 0;
+    for (int i = 1; i < argc; ++i) {
+        if (std::strncmp(argv[i], "--orders=", 9) == 0) orders = std::strtoull(argv[i] + 9, nullptr, 10);
+        if (std::strncmp(argv[i], "--out=", 6) == 0) path = argv[i] + 6;
+    }
+    std::FILE* file = std::fopen(path, "wb");
     if (!file) {
-        std::fprintf(stderr, "Failed to create market_data.itch\n");
+        std::fprintf(stderr, "Failed to create %s\n", path);
         return 1;
     }
 
-    int count = 0;
+    unsigned long long count = 0;
     auto emit = [&](auto encode) {
         uint8_t message[64] = {};
         const size_t n = encode(message);
@@ -46,11 +60,29 @@ int main() {
     emit([&](uint8_t* m) { return itch::encodeOrderDelete(m, kGoogl, ts + 23, 1003); });
     emit([&](uint8_t* m) { return itch::encodeTrade(m, kGoogl, ts + 24, 0, 'B', 50, "GOOGL   ", 1'500'050, 2); });
 
+    // Order flow away from the inside, so the hand-written book above keeps its best prices.
+    constexpr uint64_t kWindow = 100;
+    constexpr uint64_t kFirstRef = 1'000'000;
+    for (uint64_t i = 0; i < orders; ++i) {
+        const uint64_t t = ts + 100 + i;
+        const bool bid = i % 2 == 0;
+        const auto ticks = static_cast<uint32_t>(10 + i % 40); // 10-49 ticks from 150.00
+        const uint32_t price = bid ? 1'500'000 - ticks * 100 : 1'500'000 + ticks * 100;
+        emit([&](uint8_t* m) { return itch::encodeAddOrder(m, kGoogl, t, kFirstRef + i, bid ? 'B' : 'S', 100, "GOOGL   ", price); });
+        if (i < kWindow) continue;
+        const uint64_t oldest = kFirstRef + i - kWindow;
+        if (i % 2 == 0) {
+            emit([&](uint8_t* m) { return itch::encodeOrderDelete(m, kGoogl, t, oldest); });
+        } else {
+            emit([&](uint8_t* m) { return itch::encodeOrderExecuted(m, kGoogl, t, oldest, 100, i); });
+        }
+    }
+
     ts = 16 * kHour;
     emit([&](uint8_t* m) { return itch::encodeSystemEvent(m, ts, 'M'); });
     emit([&](uint8_t* m) { return itch::encodeSystemEvent(m, ts + 1, 'C'); });
 
     std::fclose(file);
-    std::printf("Wrote %d messages to market_data.itch\n", count);
+    std::printf("Wrote %llu messages to %s\n", count, path);
     return 0;
 }
