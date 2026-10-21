@@ -5,10 +5,12 @@
 
 .DESCRIPTION
     Does the Windows side, in this order:
-      1. Checks: UEFI firmware, Secure Boot, BitLocker on C:, and the disks with their free space.
-      2. BitLocker: saves C:'s recovery password to the output folder. Installing a second boot
+      1. Checks: UEFI firmware, Secure Boot, BitLocker on C:, and every disk with its partitions.
+         Stops if C: is encrypted without a recovery password.
+      2. BitLocker: if C: is encrypted, saves its recovery password to the output folder. Installing a second boot
          loader can make Windows ask for it at the next boot. With -SuspendBitLocker, protection
-         is also suspended for the next 3 reboots, so it doesn't ask at all.
+         is also suspended for the next 3 reboots, which covers the install. It doesn't make it
+         safe to boot Windows through GRUB later: start Windows from the firmware boot menu.
       3. Turns off Fast Startup. With it on, Windows hibernates instead of shutting down, and its
          partitions stay locked while Linux runs.
       4. -ShrinkGB N: shrinks C: by N GB, leaving unallocated space for the installer. Skip this
@@ -55,8 +57,13 @@ function Section([string]$title) { Write-Host "`n== $title" -ForegroundColor Cya
 # --- 1. Checks ------------------------------------------------------------------------------
 
 Section "Firmware"
-if ($env:firmware_type -ne "UEFI") {
-    throw "Firmware mode is '$env:firmware_type'. Ubuntu next to Windows needs UEFI; legacy BIOS installs are not covered here."
+# PEFirmwareType: 1 = legacy BIOS, 2 = UEFI. ($env:firmware_type doesn't work here: %FIRMWARE_TYPE% is
+# computed by cmd.exe when it expands it, and isn't in the environment PowerShell reads.)
+$firmware = (Get-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control" -Name PEFirmwareType -ErrorAction SilentlyContinue).PEFirmwareType
+if ($firmware -eq 1) {
+    throw "Windows booted in legacy BIOS mode. Ubuntu next to this Windows would need legacy mode too, which these steps don't cover. Don't change firmware settings to fix this: a BIOS-mode Windows won't boot in UEFI mode."
+} elseif ($firmware -ne 2) {
+    Write-Warning "Couldn't read the firmware type; carrying on as if it's UEFI."
 }
 try {
     $secureBoot = Confirm-SecureBootUEFI
@@ -67,47 +74,68 @@ try {
 
 Section "BitLocker on C:"
 # The CIM class works on Home editions too (device encryption) and doesn't depend on the display language.
+# Decide on encryption, not protection: a suspended volume reports ProtectionStatus 0 but is still
+# encrypted, and protection comes back by itself after the suspended reboots.
 $volume = Get-CimInstance -Namespace "root\CIMV2\Security\MicrosoftVolumeEncryption" -ClassName Win32_EncryptableVolume `
     -Filter "DriveLetter = 'C:'" -ErrorAction SilentlyContinue
-$bitLockerOn = $volume -and $volume.ProtectionStatus -eq 1
-if (-not $bitLockerOn) {
-    Write-Host "Not protecting C:."
+$encrypted = $false
+if ($volume) {
+    $conversion = Invoke-CimMethod -InputObject $volume -MethodName GetConversionStatus -ErrorAction SilentlyContinue
+    $encrypted = ($conversion -and $conversion.ConversionStatus -ne 0) -or $volume.ProtectionStatus -eq 1
+}
+if (-not $volume) {
+    Write-Host "Couldn't read the BitLocker state (this edition may not have BitLocker)."
+} elseif (-not $encrypted) {
+    Write-Host "C: is not encrypted."
 } else {
+    Write-Host "C: is encrypted, protection $(if ($volume.ProtectionStatus -eq 1) { 'on' } else { 'suspended (it comes back by itself)' })."
     $keyFile = Join-Path $OutDir "bitlocker-recovery-C.txt"
     # Home editions may lack the BitLocker module; manage-bde is on every edition.
     $haveModule = [bool](Get-Command Get-BitLockerVolume -ErrorAction SilentlyContinue)
     if ($haveModule) {
-        $passwords = (Get-BitLockerVolume -MountPoint "C:").KeyProtector | Where-Object KeyProtectorType -eq "RecoveryPassword"
-        $passwords | ForEach-Object { "Key ID $($_.KeyProtectorId)`r`nRecovery password $($_.RecoveryPassword)`r`n" } |
-            Set-Content -Path $keyFile -Encoding ASCII -WhatIf:$false
+        $passwords = (Get-BitLockerVolume -MountPoint "C:").KeyProtector | Where-Object KeyProtectorType -eq "RecoveryPassword" |
+            ForEach-Object { "Key ID $($_.KeyProtectorId)`r`nRecovery password $($_.RecoveryPassword)`r`n" }
     } else {
         $passwords = manage-bde -protectors -get C: -Type RecoveryPassword
-        $passwords | Set-Content -Path $keyFile -Encoding UTF8 -WhatIf:$false
-        if ($LASTEXITCODE -ne 0) { $passwords = $null }
+        if ($LASTEXITCODE -ne 0) { $passwords = $null } # no recovery password, or manage-bde failed
     }
     if (-not $passwords) {
-        $warnings.Add("BitLocker is on but no recovery password was found for C:. Add one before installing: manage-bde -protectors -add C: -RecoveryPassword")
-    } else {
-        Write-Host "On. Recovery password saved to $keyFile"
-        $warnings.Add("Copy $keyFile off this machine (phone, password manager) before you install. It's also at https://account.microsoft.com/devices/recoverykey if the PC is linked to a Microsoft account.")
+        throw "C: is encrypted but has no recovery password, so a boot-loader change could lock you out of Windows. Add one, note it down, then run this again: manage-bde -protectors -add C: -RecoveryPassword"
     }
+    $passwords | Set-Content -Path $keyFile -Encoding UTF8 -WhatIf:$false
+    Write-Host "Recovery password saved to $keyFile"
+    $copyOff = "Copy $keyFile off this machine (phone, password manager) before you install: when Windows asks for it, C: is locked. It's also at https://account.microsoft.com/devices/recoverykey if the PC is linked to a Microsoft account."
+    Write-Warning $copyOff
+    $warnings.Add($copyOff)
     if ($SuspendBitLocker -and $PSCmdlet.ShouldProcess("C:", "Suspend BitLocker for 3 reboots")) {
-        if ($haveModule) { Suspend-BitLocker -MountPoint "C:" -RebootCount 3 | Out-Null }
-        else { manage-bde -protectors -disable C: -RebootCount 3 | Out-Null }
+        if ($haveModule) {
+            Suspend-BitLocker -MountPoint "C:" -RebootCount 3 | Out-Null
+        } else {
+            manage-bde -protectors -disable C: -RebootCount 3 | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw "manage-bde could not suspend BitLocker (exit code $LASTEXITCODE)." }
+        }
         Write-Host "Suspended for the next 3 reboots; it resumes by itself after that."
     }
 }
 
 Section "Disks"
 $disks = Get-Disk | Sort-Object Number
-$disks | Format-Table -AutoSize Number, FriendlyName, BusType, PartitionStyle,
+$disks | Format-Table -AutoSize Number, FriendlyName, SerialNumber, BusType, PartitionStyle,
     @{ n = "SizeGB"; e = { [math]::Round($_.Size / 1GB) } },
     @{ n = "FreeGB"; e = { [math]::Round($_.LargestFreeExtent / 1GB) } },
+    @{ n = "Partitions"; e = { $_.NumberOfPartitions } },
+    @{ n = "Letters"; e = { (Get-Partition -DiskNumber $_.Number -ErrorAction SilentlyContinue | Where-Object DriveLetter |
+        ForEach-Object { "$($_.DriveLetter):" }) -join " " } },
     @{ n = "Windows"; e = { if ($_.IsBoot -or $_.IsSystem) { "yes" } else { "" } } } | Out-Host
-$spare = $disks | Where-Object { -not $_.IsBoot -and -not $_.IsSystem -and $_.BusType -ne "USB" }
-if ($spare) {
-    Write-Host "Disks other than the Windows one: $(($spare | ForEach-Object { "#$($_.Number) $($_.FriendlyName)" }) -join ', ')."
-    Write-Host "A drive of its own is the safest place for Ubuntu: pick it in the installer and leave -ShrinkGB at 0."
+$others = $disks | Where-Object { -not $_.IsBoot -and -not $_.IsSystem -and $_.BusType -ne "USB" }
+$empty = $others | Where-Object { $_.NumberOfPartitions -eq 0 -or $_.PartitionStyle -eq "RAW" }
+if ($empty) {
+    Write-Host "Empty disks: $(($empty | ForEach-Object { "#$($_.Number) $($_.FriendlyName), $([math]::Round($_.Size / 1GB)) GB" }) -join '; ')."
+    Write-Host "An empty drive of its own is the safest place for Ubuntu: pick it in the installer by its size and model, and leave -ShrinkGB at 0."
+}
+$withData = $others | Where-Object { $_.NumberOfPartitions -gt 0 -and $_.PartitionStyle -ne "RAW" }
+if ($withData) {
+    Write-Host "Other disks with partitions on them: $(($withData | ForEach-Object { "#$($_.Number) $($_.FriendlyName)" }) -join '; '). Installing Ubuntu on one of these with 'Use an entire disk' erases it."
 }
 
 # --- 2. Fast Startup ------------------------------------------------------------------------
@@ -165,11 +193,15 @@ if (-not $SkipDownload) {
     if ($haveIt) {
         Write-Host "$($newest.Name) is already in $OutDir and matches its checksum."
     } elseif ($PSCmdlet.ShouldProcess($iso, "Download $base/$($newest.Name)")) {
-        Write-Host "Downloading $($newest.Name) (about 3 GB)..."
+        Write-Host "Downloading $($newest.Name) (3-4 GB)..."
         try {
-            Start-BitsTransfer -Source "$base/$($newest.Name)" -Destination $iso # resumable, shows progress
+            $ProgressPreference = "Continue" # BITS reports progress through the progress bar
+            Start-BitsTransfer -Source "$base/$($newest.Name)" -Destination $iso # resumable
         } catch {
+            $ProgressPreference = "SilentlyContinue"
             Invoke-WebRequest -UseBasicParsing -Uri "$base/$($newest.Name)" -OutFile $iso
+        } finally {
+            $ProgressPreference = "SilentlyContinue"
         }
         if ((Get-FileHash -Algorithm SHA256 $iso).Hash -ne $newest.Hash) {
             Remove-Item $iso
@@ -206,13 +238,20 @@ Write-Host @"
 1. Shut down (with Fast Startup off, this really shuts down), plug in the stick, and open your
    board's boot menu (often F8, F11 or F12). Pick the UEFI entry of the stick.
 2. Installer: Ubuntu Server (not minimized). Enable "Install OpenSSH server".
-   Storage, on a drive of its own: "Use an entire disk" on THAT drive. Check the disk name twice.
+   Storage, on a drive of its own: "Use an entire disk" on THAT drive; it erases everything on it.
+   Pick it by size and model, which the table above shows for every disk.
    Storage, next to Windows on one disk: "Custom storage layout", put an ext4 partition mounted at /
    in the free space, and keep the existing EFI partition as it is (don't format it).
-3. Windows stays in your board's boot menu. To list it in GRUB as well: set
-   GRUB_DISABLE_OS_PROBER=false in /etc/default/grub, then sudo update-grub.
-4. Clock: Windows keeps the hardware clock in local time, Ubuntu in UTC, so one of them shows the
-   wrong hour after switching. In Ubuntu: sudo timedatectl set-local-rtc 1
+$(if ($encrypted) {
+"3. Start Windows from your board's boot menu, not from GRUB. With BitLocker on, booting Windows
+   through GRUB changes what the TPM measures, and Windows asks for the recovery password."
+} else {
+"3. Windows stays in your board's boot menu. To list it in GRUB as well: sudo apt install os-prober,
+   set GRUB_DISABLE_OS_PROBER=false in /etc/default/grub, then sudo update-grub."
+})
+4. Clock: Windows keeps the hardware clock in local time and Ubuntu keeps it in UTC, so one of them
+   shows the wrong hour after a switch. Keep Ubuntu on UTC and tell Windows the clock is UTC, in an
+   administrator prompt: reg add HKLM\SYSTEM\CurrentControlSet\Control\TimeZoneInformation /v RealTimeIsUniversal /t REG_DWORD /d 1 /f
 5. Then follow docs/native_linux.md from "Packages".
 "@
 if ($warnings.Count -gt 0) {

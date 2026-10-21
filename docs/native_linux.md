@@ -10,8 +10,8 @@ The real-day figures so far (131 ns p50 per update) come from WSL2. Measure a ne
 
 ## Install
 
-- **OS:** Ubuntu Server 26.04 LTS, or 24.04 with the HWE kernel. Leave the desktop out, since fewer background processes means a quieter tail. Install it on its own drive or partition so that Windows stays bootable.
-- **The Windows side:** [`bench/prepare_native_linux.ps1`](../bench/prepare_native_linux.ps1), from an administrator PowerShell. It checks for UEFI, saves the BitLocker recovery password, turns off Fast Startup, downloads and verifies the newest Ubuntu Server ISO, and opens Rufus to write it to a USB stick. `-ShrinkGB N` makes room on the Windows disk, and `-WhatIf` shows every change first:
+- **OS:** Ubuntu Server 24.04 LTS, which matches CI (GCC 13, Clang 18), or 26.04 LTS, whose newer compilers may add warnings that fail the `-Werror` build. Leave the desktop out, since fewer background processes means a quieter tail. Install it on its own drive or partition so that Windows stays bootable.
+- **The Windows side:** [`bench/prepare_native_linux.ps1`](../bench/prepare_native_linux.ps1), from an administrator PowerShell. It checks for UEFI, saves the BitLocker recovery password, turns off Fast Startup, downloads and verifies the newest 24.04 Server ISO (`-Release 26.04` for 26.04), and opens Rufus to write it to a USB stick. `-ShrinkGB N` makes room on the Windows disk, and `-WhatIf` shows every change first:
   ```powershell
   powershell -ExecutionPolicy Bypass -File bench\prepare_native_linux.ps1 -WhatIf
   powershell -ExecutionPolicy Bypass -File bench\prepare_native_linux.ps1 -SuspendBitLocker
@@ -21,7 +21,7 @@ The real-day figures so far (131 ns p50 per update) come from WSL2. Measure a ne
   sudo apt install build-essential cmake ninja-build clang git linux-tools-common linux-tools-generic
   git clone https://github.com/veetihietasalo/MiniHFT && cd MiniHFT
   ```
-- **The NASDAQ sample day:** copy `12302019.NASDAQ_ITCH50.gz` over from Windows, or download it again from emi.nasdaq.com. To copy it, mount the Windows partition read-only: `sudo mount -o ro /dev/<partition> /mnt/win`. Keep the file gzipped, because the runner decompresses it on the fly.
+- **The NASDAQ sample day:** copy `12302019.NASDAQ_ITCH50.gz` over from Windows, or download it again from emi.nasdaq.com. To copy it, mount the Windows partition read-only: `sudo mount -o ro /dev/<partition> /mnt/win`. If BitLocker encrypts it, unlock it first with the saved recovery password: `sudo cryptsetup bitlkOpen --readonly /dev/<partition> win`, then `sudo mount -o ro /dev/mapper/win /mnt/win`. Keep the file gzipped, because the runner decompresses it on the fly.
 - **Claude Code (optional):** install it with `curl -fsSL https://claude.ai/install.sh | bash`, then run `claude remote-control` in the repo folder. The session appears in the Claude Code app and can build, run and compare results on this machine without you at the keyboard. It sits idle while a benchmark runs.
 
 ## Run

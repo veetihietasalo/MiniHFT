@@ -83,7 +83,7 @@ On x86 the broken `publish()` compiles to *exactly the same instructions* as the
 
 The source is wrong on x86 too, not just on ARM. The compiler may move the plain slot stores after a relaxed atomic. Clang happened not to here, but a different compiler, flag or surrounding code could.
 
-The same logic applies to `consume()`. With a relaxed `consume()`, ARM may let the producer see the new `tail` before the consumer's loads from the slot have completed, and overwrite the slot mid-read. x86 never reorders a load with a later store, so that bug hides on x86 too. The N2 runners didn't reorder it either, in 300M messages ([below](#two-slots-and-the-other-direction)).
+The same logic applies to `consume()`. With a relaxed `consume()`, ARM may let the producer see the new `tail` before the consumer's loads from the slot have completed, and overwrite the slot mid-read. x86 never reorders a load with a later store, so that bug hides on x86 too. On the N2 runners it damaged no message either, in 300M ([below](#two-slots-and-the-other-direction)).
 
 <details>
 <summary>Source for the table</summary>
@@ -133,6 +133,14 @@ The CPU made the increment visible to the consumer before the four stores. With 
 
 **Why 8 slots shows it so much more.** With 8 slots, the consumer read each slot less than a microsecond before the producer writes it again. So the slot's cache line is most likely still in the consumer's cache, and each slot store has to take it back first. A relaxed increment of `head` doesn't wait for that. (The cache states weren't measured.) With 1024 slots, damage only appeared in the runs where the two threads stayed in lock-step: those ran in 12–16 s instead of 6–7 s, and spent almost no time yielding on a full or empty queue.
 
+**What it means:**
+- The bug is real on hardware that's widely deployed (Graviton, Cobalt, Axion and Grace all use Neoverse cores), not only a rule of the C++ memory model.
+- It's usually rare, and the rate swings widely. With 8 slots, between 1 in 3,000 and 1 in 15 million messages was damaged; with 2 slots, up to 1.7% of a run's messages. With 1024 slots it was about 1 in 10 million or fewer, and 9 of the 12 runs of 100M messages showed nothing at all. A stress test that passes on ARM is evidence, not proof. ThreadSanitizer, which also runs on the ARM runner in CI, found the race on the first run.
+- So a stress test needs millions of messages on ARM. Natively on AArch64 every SPSC stress test (`RingBuffer`, the W03 variants and `KernelBypass`) sends 5M (`stressCount()` in [`SpscStress.hpp`](../tests/SpscStress.hpp)). x86 and ThreadSanitizer builds keep 100,000–300,000. At the GCC rates measured with 8 slots (here and [below](#two-slots-and-the-other-direction)), a relaxed `publish()` would damage roughly 1 to 1,500 of the 5M, so a 5M run catches it in most runs but not all. With 1024 slots it would damage about one, and often none: a ring that large catches this bug only now and then, even at 5M. So every W03 variant also runs with 8 slots. Only `KernelBypass`, whose ring is fixed at 1024 descriptors, has no small-ring test.
+- The `Stress.*` tests send 100,000 messages on every build, under the tight and random schedules. Six of the 22 have 2 slots (`ring-tiny`, `v0-tiny`, `v1-tiny`). At the [2-slot rates](#two-slots-and-the-other-direction), a relaxed `publish()` would damage about one message in each of those six at the tight-schedule median (0.9 to 1.3), and 0.1 to 4 with random stalls. The 1024-slot ones would almost never show it. So they catch it only now and then.
+
+CI keeps the measurement as a test: `ARM.RelaxedPublishDamagesMessages`, registered for native AArch64 builds without a sanitizer. It runs the 8-slot broken queue in rounds of 10M messages, up to 300M, and passes once a round delivers a damaged message. On the N2 runner it passed 11 of 11 times, taking 0.7–6.3 s. It is the hardware counterpart of `TSan.CatchesRelaxedPublish`. Another ARM core may reorder less often. If it fails there, the hardware didn't show the reordering within 300M messages; it doesn't mean `RingBuffer` is broken.
+
 #### Two slots, and the other direction
 
 [`spsc_stress`](../tests/spsc_stress.cpp) runs the same broken queue with 2 slots. These were measured later on two runner hosts with GCC 13, five runs per row on each. A damaged message is one with a wrong payload word:
@@ -146,20 +154,12 @@ The CPU made the increment visible to the consumer before the four stores. With 
 | correct `RingBuffer`, 2 slots (the control) | tight | 30M | 0 in all 5 | 0 in all 5 |
 | relaxed `consume()`, 2 slots | tight | 30M | 0 in all 5 | 0 in all 5 |
 
-- **The control stayed clean,** so all the damage comes from the missing release.
+- **The correct 2-slot `RingBuffer` stayed clean.** It differs from the broken queue in more than the release (a plain store instead of `fetch_add`, cached indices). The exact control, the same queue with a release `publish()`, is the 8-slot control row in the first table.
 - **With the threads in lock-step (tight or yield), every run damaged messages:** 20 of 20 with 2 slots, 10 of 10 with 8.
-- **2 slots aren't reliably worse than 8.** Host 1 damaged far more with 2 slots: medians of 277 (tight) and 4,797 (yield), against 15. Host 2 went the other way: 387 and 2,037, against 3,206. Both rings are small enough for the explanation above; between them, the host and where the threads land decide.
+- **2 slots aren't reliably worse than 8.** Host 1 damaged far more with 2 slots: medians of 277 (tight) and 4,797 (yield), against 15. Host 2 went the other way: 387 and 2,037, against 3,206. Both rings are small enough for the explanation above. Which of the two showed more changed from host to host, and the cause wasn't measured.
 - **The spread is wide.** It ran from 2 to 521,632 per 30M, and that last run is 1.7% of all its messages. Measure over several runs, and on more than one host.
 - **Random stalls between the steps of each hand-off don't hide it:** 9 of 10 runs, with a tenth of the messages.
-- **A relaxed `consume()` showed nothing in 300M messages on the two hosts.** The Arm architecture allows a store to become visible before an earlier load completes, but these cores didn't do it here. On this hardware, only ThreadSanitizer (`TSan.CatchesRelaxedConsume`) catches that bug.
-
-**What it means:**
-- The bug is real on hardware that's widely deployed (Graviton, Cobalt, Axion and Grace all use Neoverse cores), not only a rule of the C++ memory model.
-- It's usually rare, and the rate swings widely. With 8 slots, between 1 in 3,000 and 1 in 15 million messages was damaged; with 2 slots, up to 1.7% of a run's messages. With 1024 slots it was about 1 in 10 million or fewer, and 9 of the 12 runs of 100M messages showed nothing at all. A stress test that passes on ARM is evidence, not proof. ThreadSanitizer, which also runs on the ARM runner in CI, found the race on the first run.
-- So a stress test needs millions of messages on ARM. Natively on AArch64 every SPSC stress test (`RingBuffer`, the W03 variants and `KernelBypass`) sends 5M (`stressCount()` in [`SpscStress.hpp`](../tests/SpscStress.hpp)). x86 and ThreadSanitizer builds keep 100,000–300,000. At the rates GCC showed above, a relaxed `publish()` would damage roughly 14 to 350 of the 5M with 8 slots. With 1024 slots it would damage about one, and often none: a ring that large catches this bug only now and then, even at 5M. So every W03 variant also runs with 8 slots. Only `KernelBypass`, whose ring is fixed at 1024 descriptors, has no small-ring test.
-- The `Stress.*` tests send 100,000 messages on every build. At the 2-slot rates above, a relaxed `publish()` would damage about one message per test at the median of the tight runs and far fewer at the low end, so they catch it only now and then.
-
-CI keeps the measurement as a test: `ARM.RelaxedPublishDamagesMessages`, registered for native AArch64 builds without a sanitizer. It runs the 8-slot broken queue in rounds of 10M messages, up to 300M, and passes once a round delivers a damaged message. On the N2 runner it passed 11 of 11 times, taking 0.7–6.3 s. It is the hardware counterpart of `TSan.CatchesRelaxedPublish`. Another ARM core may reorder less often. If it fails there, the hardware didn't show the reordering within 300M messages; it doesn't mean `RingBuffer` is broken.
+- **A relaxed `consume()` damaged no message in 300M on the two hosts,** with 2 slots and the tight schedule only. The Arm architecture allows a store to become visible before an earlier load completes. These runs show only that no overwrite landed inside the consumer's read, not that the core never reorders. So far, only ThreadSanitizer (`TSan.CatchesRelaxedConsume`) has caught that bug on this hardware.
 
 ## Your call: when is `seq_cst` worth it?
 
