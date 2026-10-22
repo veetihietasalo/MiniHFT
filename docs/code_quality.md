@@ -46,9 +46,9 @@ One exception remains: the test binary is built without `-Wnull-dereference`. GC
 
 | Preset | Checks | Tests |
 |--------|--------|------:|
-| `clang-asan-ubsan` | AddressSanitizer + UndefinedBehaviorSanitizer, plus `float-divide-by-zero`, `local-bounds`, `implicit-conversion` and `nullability` ([why, and why not `unsigned-integer-overflow`](verification.md#lifetimes-and-undefined-behaviour-the-gaps-asan-leaves)); leak detection, stack-use-after-return and initialization-order checks on | 119 |
-| `clang-tsan` | ThreadSanitizer, including the tests that pass only if TSan reports a deliberately broken queue | 121 |
-| `gcc-debug-stl` | Not a sanitizer, but in the same spirit: libstdc++ debug mode catches invalidated iterators and out-of-range indexing that ASan can't see | 143 |
+| `clang-asan-ubsan` | AddressSanitizer + UndefinedBehaviorSanitizer, plus `float-divide-by-zero`, `local-bounds`, `implicit-conversion` and `nullability` ([why, and why not `unsigned-integer-overflow`](verification.md#lifetimes-and-undefined-behaviour-the-gaps-asan-leaves)); leak detection, stack-use-after-return and initialization-order checks on | 123 |
+| `clang-tsan` | ThreadSanitizer, including the tests that pass only if TSan reports a deliberately broken queue | 127 |
+| `gcc-debug-stl` | Not a sanitizer, but in the same spirit: libstdc++ debug mode catches invalidated iterators and out-of-range indexing that ASan can't see | 147 |
 
 Both build with `-fno-sanitize-recover=all`, so the first report ends the run and a test can't pass after one. Sanitizer runtimes replace global `operator new`, and so do the zero-allocation tests, so those 8 tests only run in the other builds.
 
@@ -89,13 +89,13 @@ CI uses Ubuntu 24.04's clang-tidy 18. A check newer than that (`misc-use-interna
 
 | Job | What must hold |
 |-----|----------------|
-| `msvc-release` | MSVC `/W4 /WX` build; 143 tests: 92 unit tests, 28 [compile-fail tests](verification.md#compile-fail-tests), 22 [SPSC stress tests](verification.md#memory-ordering-every-threaded-path-more-schedules) and `compare.py`'s tests |
-| `gcc-release` | GCC strict warnings with `-Werror`; the same 143 tests |
-| `gcc-debug-stl` | The same 143 tests under libstdc++ debug mode |
-| `clang-tsan` | ThreadSanitizer; 121 tests (no compile-fail or zero-allocation tests under a sanitizer; adds the 12 program smoke tests, `TSan.CatchesRelaxedPublish` and `TSan.CatchesRelaxedConsume`), then the 22 stress tests 10 more times with new seeds |
-| `clang-asan-ubsan` | AddressSanitizer + UndefinedBehaviorSanitizer; 119 tests |
-| `gcc-release (arm64)` | The same build on AArch64 (Arm Neoverse N2), where stores really are reordered; 144 tests, including one that passes only if the broken queue delivers damaged messages ([memory_ordering.md](memory_ordering.md#measured-on-arm)) |
-| `clang-tsan (arm64)` | ThreadSanitizer on AArch64; 121 tests, then the same 10 stress repeats |
+| `msvc-release` | MSVC `/W4 /WX` build; 147 tests: 94 unit tests, 28 [compile-fail tests](verification.md#compile-fail-tests), 24 [SPSC stress tests](verification.md#memory-ordering-every-threaded-path-more-schedules) and `compare.py`'s tests |
+| `gcc-release` | GCC strict warnings with `-Werror`; the same 147 tests |
+| `gcc-debug-stl` | The same 147 tests under libstdc++ debug mode |
+| `clang-tsan` | ThreadSanitizer; 127 tests (no compile-fail or zero-allocation tests under a sanitizer; adds the 12 program smoke tests and four `TSan.CatchesRelaxed*` tests: a relaxed `publish()`, a relaxed `consume()` and both `KernelBypass` handoffs), then the 24 stress tests 10 more times with new seeds |
+| `clang-asan-ubsan` | AddressSanitizer + UndefinedBehaviorSanitizer; 123 tests |
+| `gcc-release (arm64)` | The same build on AArch64 (Arm Neoverse N2), where stores really are reordered; 148 tests, including one that passes only if the broken queue delivers damaged messages ([memory_ordering.md](memory_ordering.md#measured-on-arm)) |
+| `clang-tsan (arm64)` | ThreadSanitizer on AArch64; 127 tests, then the same 10 stress repeats |
 | `fuzz` | 60 s of libFuzzer without a crash, starting from the saved inputs and `gen_itch`'s sample feed |
 | `clang-tidy` | 0 findings, Clang Static Analyzer included |
 | `bench-compare` | Report only: benchmarks the merge-base and the head on the same runner and writes the comparison to the job summary ([verification.md](verification.md#benchmark-baselines)). A regression raises a warning, never a failure. |
@@ -132,5 +132,5 @@ If a sanitizer build dies at startup with `unexpected memory mapping`, the kerne
 | **`Matrix` listed its initializers out of order.** `data` is declared first but was initialized after `rows` and `cols`. | `-Wreorder` on GCC and Clang, an error with `-Werror` | Initializers in declaration order |
 | **`Matrix(rows, cols)` didn't check `rows * cols` for overflow.** A 2⁶³ × 2 matrix wrapped to 0 elements and allocated nothing, yet `m(0, 0)` passed the bounds check. | `Matrix.DimensionsWhoseProductOverflowsAreRefused` failed. Writing `m(0, 0)`: UBSan, reference binding to null pointer | The constructor throws `std::length_error` |
 | **`movingAverage` divided `T` by `size_t`.** With integer data that division was unsigned: the window {−2, −4} of `int64_t` averaged to 9,223,372,036,854,775,805. | `-Wconversion` on GCC and `-Wimplicit-int-float-conversion` on Clang, for `double` and `float` | The window size is converted to `T`. All five templates now require `std::floating_point`: an integer mean would be truncated (the mean of {1, 2} was 1), so integer data no longer compiles. `return 0.0` became `return T{}`. |
-| **`KernelBypass` signalled with a `volatile bool` and fences.** Fences only synchronize through an atomic object, so the flag itself was a data race. | `KernelBypass.TwoThreadsDeliverEveryPacketInOrder` under clang-tsan, within the first lap: `poll()` reading `ready` races with `nicReceive()` writing it | `ready` is a `std::atomic<bool>`: release store in `nicReceive()`, acquire load in `poll()` |
-| **`nicReceive()` overwrote packets the CPU hadn't polled.** With only the fix above, a NIC that laps the CPU rewrites a slot the CPU may still be reading, and packets are lost. | `KernelBypass.FullRingRefusesPacketsUntilTheCpuPolls`: the 1,025th packet came out in place of packet 0 | The return handoff, as in `RingBuffer`: `poll()` clears `ready` with a release store, and `nicReceive()` checks it with an acquire load. It returns `false` while the slot is full, as a real NIC drops a packet when it has no free descriptor. |
+| **`KernelBypass` signalled with a `volatile bool` and fences.** Fences only synchronize through an atomic object, so the flag itself was a data race. | `KernelBypassRing/*.TwoThreadsDeliverEveryPacketInOrder` (then `KernelBypass.TwoThreads…`) under clang-tsan, within the first lap: `poll()` reading `ready` races with `nicReceive()` writing it | `ready` is a `std::atomic<bool>`: release store in `nicReceive()`, acquire load in `poll()` |
+| **`nicReceive()` overwrote packets the CPU hadn't polled.** With only the fix above, a NIC that laps the CPU rewrites a slot the CPU may still be reading, and packets are lost. | `KernelBypassRing/*.FullRingRefusesPacketsUntilTheCpuPolls` (then `KernelBypass.FullRing…`): the 1,025th packet came out in place of packet 0 | The return handoff, as in `RingBuffer`: `poll()` clears `ready` with a release store, and `nicReceive()` checks it with an acquire load. It returns `false` while the slot is full, as a real NIC drops a packet when it has no free descriptor. |

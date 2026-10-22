@@ -18,13 +18,13 @@ Durable context for agent sessions on MiniHFT: facts that are expensive to redis
   - Both clang-tsan jobs run the `stress` label 10 more times with new seeds.
   - The x86 job names are unchanged, so any required checks still match.
 - **Test counts:**
-  - 143 on gcc-release x86, gcc-debug-stl and MSVC: 92 unit, 28 `CompileFail.*`, 22 `Stress.*`, and `BenchTools.ComparePy`.
-  - 144 on gcc-release arm64, which adds `ARM.RelaxedPublishDamagesMessages`.
-  - Sanitizer builds skip the 28 compile-fail and 8 zero-allocation tests and add 12 `Smoke.*`: 119 on clang-asan-ubsan, and 121 on clang-tsan (both architectures), which also has `TSan.CatchesRelaxedPublish` and `TSan.CatchesRelaxedConsume`.
+  - 147 on gcc-release x86, gcc-debug-stl and MSVC: 94 unit, 28 `CompileFail.*`, 24 `Stress.*`, and `BenchTools.ComparePy`.
+  - 148 on gcc-release arm64, which adds `ARM.RelaxedPublishDamagesMessages`.
+  - Sanitizer builds skip the 28 compile-fail and 8 zero-allocation tests and add 12 `Smoke.*`: 123 on clang-asan-ubsan, and 127 on clang-tsan (both architectures), which also has four `TSan.CatchesRelaxed*` tests (`Publish`, `Consume`, and both `KernelBypass` handoffs).
 - **Still open:**
   - `Network.hpp` is Winsock-only (W09).
-  - The SPSC unit stress tests send 5M messages natively on AArch64 (`stressCount()` in `tests/SpscStress.hpp`, since PR #13). x86 and TSan keep 100k–300k. With 1024 slots, even 5M messages catch a relaxed `publish()` only now and then. The 8-slot rings catch it in most runs (1 to 1,500 damaged per 5M at the GCC rates measured on the broken `fetch_add` queue; a relaxed plain store's rate wasn't measured), so every W03 variant also runs with 8 slots. `KernelBypass` (ring fixed at 1024) has no small-ring test.
-  - The `Stress.*` ctests (`spsc_stress`) send a fixed 100k messages on every build, ARM included (`MINIHFT_STRESS_MESSAGES`, not `stressCount()`), under the tight and random schedules. 6 of the 22 have 2 slots (3 tight, 3 random), 2 have 4 slots (rate not measured) and 14 have 1024. At the 2-slot rates of the broken queue, a relaxed `publish()` damages about 1 message per 100k at the tight median (0.1 to 4 with random), and the 1024-slot ones almost never show it. Giving the six 2-slot tests 5M on native ARM would catch it in most runs; not done.
+  - The SPSC unit stress tests send 5M messages natively on AArch64 (`stressCount()` in `tests/SpscStress.hpp`, since PR #13). x86 and TSan keep 100k–300k. With 1024 slots, even 5M messages catch a relaxed `publish()` only now and then. The 8-slot rings catch it in most runs (1 to 1,500 damaged per 5M at the GCC rates measured on the broken `fetch_add` queue; a relaxed plain store's rate wasn't measured), so every W03 variant and `KernelBypass` (`BasicKernelBypass<8>`, since PR #17) also run with 8 slots.
+  - The `Stress.*` ctests (`spsc_stress`) send a fixed 100k messages on every build, ARM included (`MINIHFT_STRESS_MESSAGES`, not `stressCount()`), under the tight and random schedules. 6 of the 24 have 2 slots (3 tight, 3 random), 2 have 4 slots (rate not measured), 2 have 8 (`kernel-bypass-tiny`) and 14 have 1024. At the 2-slot rates of the broken queue, a relaxed `publish()` damages about 1 message per 100k at the tight median (0.1 to 4 with random), and the 1024-slot ones almost never show it. Giving the six 2-slot tests 5M on native ARM would catch it in most runs; not done.
 
 ## Decisions not to undo (measured)
 
@@ -43,6 +43,7 @@ Durable context for agent sessions on MiniHFT: facts that are expensive to redis
   - Release control: never damaged.
   - The damage rate differed by about 200× between two runner hosts (8-slot medians of 15 and 3,206 per 30M, 2026-10-21).
   - The reordering is the CPU's: GCC emits the slot `stp`s before `__aarch64_ldadd8_relax`.
+- **`KernelBypass` with either handoff relaxed: 0 damaged packets on N2** (PR #17): 100M per row, 1024 and 8 descriptors, tight and yield. The codegen differs as intended (`strb` vs `stlrb`), so the core just never shows it; data and flag share 8 bytes, unlike RingBuffer's slot and index. Only TSan catches these (`TSan.CatchesRelaxedKernelBypass*`). Don't re-run this hoping for damage.
 - **Busy-spinning instead of yielding did not raise the damage rate.** Ring size did. Don't retry the spin variant.
 
 ## Working in the cloud sandbox

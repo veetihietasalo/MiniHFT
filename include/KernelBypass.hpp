@@ -12,9 +12,15 @@
 //   nicReceive() release -> poll() acquire         the packet data is visible to the CPU
 //   poll() release       -> nicReceive() acquire   the CPU has read the data before the NIC
 //                                                  writes that descriptor again
-class KernelBypass {
+//
+// The ring size is a template parameter so the tests can also run a ring of 8 descriptors, where
+// each one changes hands every few packets. KernelBypass, below, is the 1024-descriptor ring.
+template <size_t RingSize>
+class BasicKernelBypass {
+    static_assert(RingSize > 0, "RingSize must be at least 1");
+
 public:
-    static constexpr size_t RING_SIZE = 1024;
+    static constexpr size_t RING_SIZE = RingSize;
 
 private:
     struct Descriptor {
@@ -49,3 +55,5 @@ public:
         return true;
     }
 };
+
+using KernelBypass = BasicKernelBypass<1024>;
