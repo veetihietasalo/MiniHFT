@@ -104,7 +104,7 @@
     { "name": "gcc-debug-stl", "configurePreset": "gcc-debug-stl" },
     { "name": "clang-tsan", "configurePreset": "clang-tsan" },
     { "name": "clang-asan-ubsan", "configurePreset": "clang-asan-ubsan" },
-    { "name": "clang-fuzz", "configurePreset": "clang-fuzz", "targets": ["itch_fuzz", "gen_itch"] }
+    { "name": "clang-fuzz", "configurePreset": "clang-fuzz", "targets": ["itch_fuzz", "mold_fuzz", "gen_itch"] }
   ],
   "testPresets": [
     {

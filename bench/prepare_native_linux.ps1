@@ -50,9 +50,14 @@ $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue" # Invoke-WebRequest is many times slower with its progress bar
 # Older Windows PowerShell 5.1 builds offer only SSL 3 and TLS 1.0, and releases.ubuntu.com accepts TLS 1.2 and 1.3.
 [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
-# -WhatIf:$false: the folder and the files saved in it (recovery password, checksums) change nothing
-# on the system, and a dry run needs them too.
-New-Item -ItemType Directory -Force -Path $OutDir -WhatIf:$false | Out-Null
+# -WhatIf sets $WhatIfPreference, and every command called from here inherits it, read-only ones too: in a
+# dry run the BitLocker CIM queries returned nothing, Get-BitLockerVolume failed, and loading CimCmdlets
+# printed "What if" lines. So the preference goes back off, and each change asks $PSCmdlet.ShouldProcess,
+# which still answers from -WhatIf itself. The folder and the files saved in it (recovery password,
+# checksums) change nothing on the system, and a dry run needs them too.
+$dryRun = [bool]$WhatIfPreference
+$WhatIfPreference = $false
+New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
 $warnings = [System.Collections.Generic.List[string]]::new()
 function Section([string]$title) { Write-Host "`n== $title" -ForegroundColor Cyan }
 
@@ -64,14 +69,17 @@ Section "Firmware"
 $firmware = (Get-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control" -Name PEFirmwareType -ErrorAction SilentlyContinue).PEFirmwareType
 if ($firmware -eq 1) {
     throw "Windows booted in legacy BIOS mode. Ubuntu next to this Windows would need legacy mode too, which these steps don't cover. Don't change firmware settings to fix this: a BIOS-mode Windows won't boot in UEFI mode."
-} elseif ($firmware -ne 2) {
-    Write-Warning "Couldn't read the firmware type; carrying on as if it's UEFI."
 }
+# Confirm-SecureBootUEFI throws on legacy BIOS, so an answer from it proves UEFI too.
 try {
     $secureBoot = Confirm-SecureBootUEFI
     Write-Host "UEFI, Secure Boot $(if ($secureBoot) { 'on (fine: Ubuntu boots through a signed shim)' } else { 'off' })"
 } catch {
-    Write-Host "UEFI, Secure Boot state unknown"
+    if ($firmware -eq 2) {
+        Write-Host "UEFI, Secure Boot state unknown"
+    } else {
+        Write-Warning "Couldn't read the firmware type; carrying on as if it's UEFI."
+    }
 }
 
 Section "BitLocker on C:"
@@ -113,7 +121,7 @@ if ($encrypted -and $clearKey) {
     if (-not $passwords) {
         throw "C: is encrypted but has no recovery password, so a boot-loader change could lock you out of Windows. Add one, note it down, then run this again: manage-bde -protectors -add C: -RecoveryPassword"
     }
-    $passwords | Set-Content -Path $keyFile -Encoding UTF8 -WhatIf:$false
+    $passwords | Set-Content -Path $keyFile -Encoding UTF8
     Write-Host "Recovery password saved to $keyFile"
     $copyOff = "Copy $keyFile off this machine (phone, password manager) before you install, then delete it here: when Windows asks for it, C: is locked, and on this PC it only helps whoever copies the disk. It's also at https://account.microsoft.com/devices/recoverykey if the PC is linked to a Microsoft account."
     Write-Warning $copyOff
@@ -252,7 +260,7 @@ if (-not $SkipRufus) {
         $rufus = Get-ChildItem "$env:LOCALAPPDATA\Microsoft\WinGet\Links\rufus*.exe", "$env:LOCALAPPDATA\Microsoft\WinGet\Packages\Rufus*\rufus*.exe" `
             -ErrorAction SilentlyContinue | Select-Object -First 1
     }
-    if ($rufus -and -not $WhatIfPreference) {
+    if ($rufus -and -not $dryRun) {
         Start-Process -FilePath $(if ($rufus.Source) { $rufus.Source } else { $rufus.FullName })
         Write-Host "Rufus is open. Device: your USB stick (8 GB or more; it gets erased). Boot selection: $(if ($iso) { $iso } else { 'the Ubuntu ISO' })"
         Write-Host "Partition scheme GPT, target UEFI. If it asks, 'Write in ISO Image mode' is the default; use DD mode if the stick won't boot."

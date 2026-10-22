@@ -6,7 +6,7 @@ Durable context for agent sessions on MiniHFT: facts that are expensive to redis
 
 - **Avellaneda-Stoikov (PR #19, 2026-10-22):** `include/Strategy.hpp` implements the paper's equations (29) and (30), and `src/main.cpp` (the `MiniHFT` program) reruns its section 3.3 simulation. The paper's Table 1 rows in README → *Avellaneda-Stoikov, rerun* were checked against the PDF; that section and the At a glance row hold the rerun's figures (seed 42, plus 20-seed means).
 - **README audited claim by claim (PR #19, 2026-10-22):** everything outside Performance was checked against the code, twice. Keep new README claims to what the code shows: no "engine" or "production-grade" for the project, no "zero-copy memory mapping" or "reinterpret_cast over packed structs" for the ITCH reader, no "price-time priority" for the original `OrderBook`, and no hardware-acceleration or kernel-bypass feature for the toy models (`FpgaPipeline.hpp`, `KernelBypass.hpp`). The known weak spots are under Still open below.
-- **Windows prep for native Ubuntu (PRs #16 and #18, 2026-10-21):** `bench/prepare_native_linux.ps1`, linked from `docs/native_linux.md`. It has never run on Windows: two review rounds fixed real bugs, but nothing has tested it there. Have the user run `-WhatIf` first and read its output with them before the real run.
+- **Windows prep for native Ubuntu (PRs #16 and #18, 2026-10-21):** `bench/prepare_native_linux.ps1`, linked from `docs/native_linux.md`. Its first Windows run (the owner's PC, Windows PowerShell 5.1, 2026-10-22) crashed under `-WhatIf` in the BitLocker check: read-only calls inherited `$WhatIfPreference`, so `Get-BitLockerVolume` failed. Fixed in PR #21 (the preference goes back off at the start); everything after that check is still untested on Windows. Have the user run `-WhatIf` first and read its output with them before the real run.
   - The dry run: the user, not the agent, runs it from an administrator PowerShell, in-process, under a transcript: `Set-ExecutionPolicy -Scope Process Bypass`, `Start-Transcript $HOME\whatif.txt`, `.\bench\prepare_native_linux.ps1 -WhatIf`, `Stop-Transcript`. A non-admin agent session then reads the transcript. Redirecting with `>` would miss the "What if:" lines, which go straight to the host.
   - Ubuntu Server's installer (subiquity, 24.04.5 and main as of 2026-10-20) defaults to storage version 1, which shows no free space on a disk that already has partitions. Next to Windows on one disk, boot the stick with `subiquity-storage-version=2` before `---` on the `linux` line (after `---` it carries into the installed system). The existing ESP is then picked as `/boot/efi` by itself. Checked against the code the ISO ships and a simulation of its storage model.
 - **README "At a glance" (PR #16; Avellaneda-Stoikov row PR #19):** it repeats headline numbers that the README's own Performance sections, its *Avellaneda-Stoikov, rerun* section, its feature list and `docs/ring_buffer_v2.md`, `docs/order_book.md`, `docs/zero_overhead.md` and `docs/memory_ordering.md` also state. When one changes, update every copy.
@@ -18,6 +18,7 @@ Durable context for agent sessions on MiniHFT: facts that are expensive to redis
   - Plus fuzz, clang-tidy (now with the Clang Static Analyzer, about 3 min) and `bench-compare`, which only reports and never fails.
   - Both clang-tsan jobs run the `stress` label 10 more times with new seeds.
   - The x86 job names are unchanged, so any required checks still match.
+- **Networking (2026-10-21):** a MoldUDP64 multicast feed handler, `mold_send` → `mold_recv` ([`docs/networking.md`](docs/networking.md)). POSIX only (`UdpSocket.hpp`); `Network.hpp` is still the Winsock TCP demo.
 - **Test counts:** per preset in [`docs/code_quality.md`](docs/code_quality.md), in two tables (*Sanitizers* and *What CI runs on every push*). After adding tests, recount with `ctest --preset <preset> -N` and update both tables.
 - **Still open:**
   - More open items are in [`docs/code_quality.md` → *Still open*](docs/code_quality.md#still-open).
@@ -35,6 +36,8 @@ Durable context for agent sessions on MiniHFT: facts that are expensive to redis
 - **`compare.py` gates only the central metrics** (`min`, `p50`, `mean_per_*`, throughput). With ~120 metrics and 3 runs a side, noise separates a few tail metrics in every comparison: a comment-only change "regressed" `p99.99` by +288%. Use 3 or more runs, and read tails by hand.
 - **UBSan `unsigned-integer-overflow` stays off.** All 66 reports were deliberate wrapping (hashes, checksums, `npos + 1`). The list is in CMakeLists.txt.
 - **libstdc++ debug mode doesn't allocate on the hot paths.** The zero-allocation tests pass under gcc-debug-stl, so they stay in that preset.
+
+- **The MoldUDP64 `Sequencer` holds packets beyond a gap** and gives up a gap only when the caller says so (`mold_recv`: after `--gap-wait-us`, and only with every socket drained), one gap at a time. Skipping ahead at once made the B feed useless; a wall-clock wait without draining gave up gaps whose filling packet sat unread after a deschedule. Both were found by `Multicast.MoldUdp64Loopback`, the second only under CPU load. Don't simplify either back.
 
 ## Hardware facts (measured)
 
@@ -61,11 +64,14 @@ Durable context for agent sessions on MiniHFT: facts that are expensive to redis
   - The lead rebuilds the merged tree against the real GoogleTest before trusting any result. Benchmark-sensitive fixes get a `compare.py` A/B run.
 - **Worktree agents branch from the local `origin/main`.** Run `git fetch origin main` before spawning them, or they start from a stale base.
 - **AArch64 cross build:** install `g++-aarch64-linux-gnu qemu-user` and use a toolchain file with `CMAKE_CROSSCOMPILING_EMULATOR "qemu-aarch64;-L;/usr/aarch64-linux-gnu"`. qemu runs on the x86 host's memory order, so it proves the build only. Exclude `ARM.*` tests there.
+- **Multicast in the sandbox:** `lo` has no MULTICAST flag; `eth0` has. Send through the default route with `IP_MULTICAST_LOOP` on (UdpSocket's default) and a receiver on the same host gets a copy. Linux grants up to twice `rmem_max` for SO_RCVBUF (8 MB here, as root).
+- **Text to speech (the owner listens to lessons):** `pip install kokoro-onnx soundfile`, then from Hugging Face `onnx-community/Kokoro-82M-v1.0-ONNX`: `onnx/model.onnx` and `voices/<name>.bin` (raw float32, reshape to (-1, 1, 256), pack into an .npz). Voice `af_heart` by default. Piper's lessac voice was judged too poor. Output MP3s go in the scratchpad and to the owner with SendUserFile.
 - **Weak-memory experiments need the real runner.** Put a temporary CI step on the arm64 job and read its output with the GitHub MCP `get_job_logs` (`return_content: true`). Remove the step before merge.
   - Each push lands the job on a new host, and one host's result can reverse on the next (see Hardware facts). Run on at least two: push again with the temporary step still in place.
 
 ## Conventions
 
+- **Teach while building (the owner's standing request, 2026-10-21).** Explain each decision as you make it, and why the alternatives lost; compare the C++ with how Java does the same thing; tie it to what a quant developer needs to know. Offer an audio version of longer lessons (see the TTS note above).
 - **GCC 13 at `-O3` can raise a false `-Warray-bounds`** ("forming offset 80 is out of the bounds [0, 80]" in a `std::vector` memmove), which `-Werror` turns into a failed build. Rebuilt on GCC 13.3, it comes from `erase(begin())` in `OrderBook::match()` when a fresh `OrderBook` is built every loop step (a draft `src/main.cpp`, never committed); inserts alone don't raise it. Change the code's shape rather than add a pragma or drop the flag.
 - **Numbers from papers or specs come from the document, not memory.** A recalled Avellaneda-Stoikov Table 1 (62.9 and 67.2) was wrong; the PDF says 65.0 and 68.4. Have an agent read the primary source before a figure goes into a doc.
 - **README Markdown:** put template names in backticks (`` `Matrix<T>` ``). GitHub strips a bare `<T>` as an HTML tag.

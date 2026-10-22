@@ -53,9 +53,10 @@ jobs:
         if: matrix.preset == 'clang-tsan'
         run: ctest --preset clang-tsan -L stress --repeat until-fail:10
 
-  # Coverage-guided fuzzing of the ITCH reader and dispatch, under ASan and UBSan.
+  # Coverage-guided fuzzing of the ITCH reader and dispatch, and of the MoldUDP64 receive path,
+  # under ASan and UBSan.
   fuzz:
-    name: fuzz (itch_fuzz, 60 s)
+    name: fuzz (itch_fuzz and mold_fuzz, 60 s each)
     runs-on: ubuntu-24.04
     defaults:
       run:
@@ -84,6 +85,13 @@ jobs:
 
       - name: Fuzz
         run: ./build/clang-fuzz/itch_fuzz -max_total_time=60 -timeout=10 -print_final_stats=1 corpus
+
+      # Sequences of datagrams through mold::decode and mold::Sequencer, from the saved inputs.
+      - name: Fuzz MoldUDP64
+        run: |
+          mkdir mold_corpus
+          cp tests/fuzz/mold_corpus/* mold_corpus/
+          ./build/clang-fuzz/mold_fuzz -max_total_time=60 -timeout=10 -print_final_stats=1 mold_corpus
 
       - name: Show the input that failed
         if: failure()

@@ -79,6 +79,8 @@ endif()
 file(GLOB MINIHFT_HEADERS CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/include/*.hpp")
 if(NOT WIN32)
     list(FILTER MINIHFT_HEADERS EXCLUDE REGEX "/Network\\.hpp$")
+else()
+    list(FILTER MINIHFT_HEADERS EXCLUDE REGEX "/UdpSocket\\.hpp$") # POSIX sockets
 endif()
 foreach(header IN LISTS MINIHFT_HEADERS)
     get_filename_component(name "${header}" NAME)
@@ -93,6 +95,8 @@ target_link_libraries(minihft_header_check PRIVATE minihft_core)
 set(MINIHFT_PROGRAMS main gen_itch itch_test hw_bench ring_bench)
 if(WIN32)
     list(APPEND MINIHFT_PROGRAMS net_test) # Network.hpp is Winsock-only until it's ported (W09)
+else()
+    list(APPEND MINIHFT_PROGRAMS mold_send mold_recv) # MoldUDP64 over multicast: UdpSocket.hpp is POSIX
 endif()
 foreach(prog IN LISTS MINIHFT_PROGRAMS)
     add_executable(${prog} src/${prog}.cpp)
@@ -126,6 +130,7 @@ if(MINIHFT_BUILD_TESTS)
         tests/latency_histogram_test.cpp
         tests/listener_test.cpp
         tests/matrix_statistics_test.cpp
+        tests/mold_udp64_test.cpp
         tests/object_pool_test.cpp
         tests/order_index_test.cpp
         tests/ring_buffer_test.cpp
@@ -168,6 +173,13 @@ if(MINIHFT_BUILD_TESTS)
 
     # SPSC stress under three thread schedules, and the benchmark harnesses run under the sanitizers.
     include(cmake/SanitizerSmokeTests.cmake)
+
+    # The MoldUDP64 feed end to end over real multicast: mold_send -> kernel -> mold_recv.
+    if(NOT WIN32)
+        add_test(NAME Multicast.MoldUdp64Loopback
+                 COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/mold_loopback.sh" "$<TARGET_FILE_DIR:mold_recv>" 26500)
+        set_tests_properties(Multicast.MoldUdp64Loopback PROPERTIES LABELS network TIMEOUT 120)
+    endif()
 endif()
 
 if(MINIHFT_BUILD_BENCHMARKS)
@@ -186,15 +198,17 @@ if(MINIHFT_BUILD_BENCHMARKS)
     target_link_libraries(ring_buffer_bench PRIVATE minihft_core benchmark::benchmark)
 endif()
 
-# Coverage-guided fuzzing of the ITCH reader and dispatch (clang-fuzz preset).
+# Coverage-guided fuzzing of the ITCH reader and dispatch, and of the MoldUDP64 receive path (clang-fuzz preset).
 if(MINIHFT_BUILD_FUZZERS)
     if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
         message(FATAL_ERROR "MINIHFT_BUILD_FUZZERS needs Clang (libFuzzer)")
     endif()
-    add_executable(itch_fuzz tests/fuzz/itch_fuzz.cpp)
-    target_link_libraries(itch_fuzz PRIVATE minihft_core)
-    target_compile_options(itch_fuzz PRIVATE -fsanitize=fuzzer)
-    target_link_options(itch_fuzz PRIVATE -fsanitize=fuzzer)
+    foreach(fuzzer IN ITEMS itch_fuzz mold_fuzz)
+        add_executable(${fuzzer} tests/fuzz/${fuzzer}.cpp)
+        target_link_libraries(${fuzzer} PRIVATE minihft_core)
+        target_compile_options(${fuzzer} PRIVATE -fsanitize=fuzzer)
+        target_link_options(${fuzzer} PRIVATE -fsanitize=fuzzer)
+    endforeach()
 endif()
 
 include(cmake/BenchTools.cmake)

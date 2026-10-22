@@ -235,10 +235,12 @@ MiniHFT/
 │   ├── MarketSimulator.hpp   # Random order generator (no program uses it now)
 │   ├── FpgaPipeline.hpp      # C++ sketch of a 3-stage register pipeline; no HDL
 │   ├── KernelBypass.hpp      # In-process model of a NIC receive ring polled by the CPU
-│   └── Network.hpp           # TCP client and server, Winsock only
-├── src/                      # Small programs: MiniHFT (the Avellaneda-Stoikov simulation), gen_itch, itch_test, hw_bench, ring_bench, net_test (Windows)
+│   ├── Network.hpp           # TCP client and server, Winsock only
+│   ├── MoldUdp64.hpp         # MoldUDP64 decoding and the A/B sequencer: gaps, duplicates, exactly-once delivery
+│   └── UdpSocket.hpp         # UDP multicast receiver and sender, POSIX sockets
+├── src/                      # Small programs: MiniHFT (the Avellaneda-Stoikov simulation), gen_itch, itch_test, hw_bench, ring_bench, net_test (Windows), mold_send and mold_recv (Linux)
 ├── bench/                    # Latency harnesses, Google Benchmark, compare.py, CCD scripts
-├── tests/                    # GoogleTest, SPSC stress, compile-fail cases, ITCH fuzzer
+├── tests/                    # GoogleTest, SPSC stress, compile-fail cases, ITCH and MoldUDP64 fuzzers, multicast loopback test
 ├── cmake/                    # ctest wiring: compile-fail, SPSC stress, sanitizer smoke and compare.py tests
 ├── docs/                     # Design notes and measurements
 └── .github/workflows/        # CI on x86 and ARM64: builds, tests, sanitizers, fuzzing, clang-tidy, benchmark comparison
@@ -258,6 +260,16 @@ MiniHFT/
 ```
 
 On Windows the programs are in `build\msvc-release\Release\` as `.exe` files; run both from the same directory.
+
+`gen_itch --orders=N --out=FILE` writes a longer feed instead: N add orders, all but the last 100 later deleted or fully executed, about 2N messages.
+
+### Market Data over UDP Multicast (Linux)
+```bash
+./build/gcc-release/gen_itch --orders=1000000 --out=feed.itch                          # 2M messages
+./build/gcc-release/mold_recv --group-b=239.192.0.2 &                                   # feed handler: A and B feeds, gaps, books
+./build/gcc-release/mold_send feed.itch --group-b=239.192.0.2 --drop-a=3 --pps=100000   # feed A drops every 3rd packet; B fills the gaps
+```
+How it works, the three bugs its tests found, and loopback measurements: [Networking](docs/networking.md).
 
 ### Performance Benchmarks
 ```bash
@@ -292,7 +304,7 @@ This project demonstrates skills relevant to:
 - **Quant Developer**: C++ optimization, low-latency systems
 - **Algo Trading Engineer**: Order-by-order (L3) book reconstruction over a full NASDAQ ITCH day (268.7M messages), with checks for unknown orders, over-executions and crossed books. Each of the 4,738 times an add or replace left a book crossed during market hours is traced to a halt, a limit-up/limit-down pause or a reopening auction
 - **Quant Researcher**: The Avellaneda-Stoikov model implemented from the paper and checked against the paper's own simulation. There is no backtester or P&L on real data yet: no strategy runs on the replayed NASDAQ day
-- **HFT Engineer**: Lock-free SPSC queues checked by ThreadSanitizer and on ARM hardware, binary feed decoding (ITCH 5.0), and latency measured as percentiles
+- **HFT Engineer**: Lock-free SPSC queues checked by ThreadSanitizer and on ARM hardware, binary feed decoding (ITCH 5.0), a MoldUDP64 multicast feed handler with A/B arbitration and gap detection, and latency measured as percentiles
 
 ## 📖 Documentation
 
@@ -301,6 +313,7 @@ This project demonstrates skills relevant to:
 - [The L3 Order Book](docs/order_book.md) - Design, bugs fixed in the old code, old vs new, and a full NASDAQ day replayed
 - [Zero-Overhead Extension Points](docs/zero_overhead.md) - Concepts for handlers and listeners, template vs virtual listener cost, the generated assembly, and zero-allocation tests
 - [Code Quality](docs/code_quality.md) - Six bugs proven by failing tests and then fixed, hardened APIs, sanitizers, fuzzing, clang-tidy, and what CI checks
+- [Networking](docs/networking.md) - A MoldUDP64 multicast feed handler: A/B feeds, gap detection, the socket pitfalls, three bugs its tests found, and what a full receive buffer costs in latency
 - [Verification](docs/verification.md) - A check for each area where AI-written C++ goes wrong: compile-fail tests for concepts and `static_assert`s, libstdc++ debug mode, stricter UBSan and the static analyzer, TSan on every threaded path except the Windows-only network test, SPSC stress under three schedules, and benchmark baselines with `compare.py`, which exits 1 on a regression (CI only reports), shown catching a 50 ns busy-wait planted in the order book's take path
 - [Benchmarking on native Ubuntu](docs/native_linux.md) - Why WSL2 isn't enough for these benchmarks, and how to install, run, save a baseline and check against it on native Linux
 - [C++ Learning Guide](docs/cpp_learning_guide.md) - An early primer on templates, atomics, alignment, ITCH and the Avellaneda-Stoikov formulas, written before the current code; see [Background notes](#-background-notes)
