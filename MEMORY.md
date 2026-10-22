@@ -20,7 +20,7 @@ Durable context for agent sessions on MiniHFT: facts that are expensive to redis
 - **Test counts:**
   - 143 on gcc-release x86, gcc-debug-stl and MSVC: 92 unit, 28 `CompileFail.*`, 22 `Stress.*`, and `BenchTools.ComparePy`.
   - 144 on gcc-release arm64, which adds `ARM.RelaxedPublishDamagesMessages`.
-  - Sanitizer builds skip the compile-fail tests and add 12 `Smoke.*`: 121 on clang-tsan (both architectures, with `TSan.CatchesRelaxedConsume`), 119 on clang-asan-ubsan.
+  - Sanitizer builds skip the 28 compile-fail and 8 zero-allocation tests and add 12 `Smoke.*`: 119 on clang-asan-ubsan, and 121 on clang-tsan (both architectures), which also has `TSan.CatchesRelaxedPublish` and `TSan.CatchesRelaxedConsume`.
 - **Still open:**
   - `Network.hpp` is Winsock-only (W09).
   - The SPSC unit stress tests send 5M messages natively on AArch64 (`stressCount()` in `tests/SpscStress.hpp`, since PR #13). x86 and TSan keep 100k–300k. With 1024 slots, even 5M messages catch a relaxed `publish()` only now and then. The 8-slot rings catch it in most runs (1 to 1,500 damaged per 5M at the GCC rates measured on the broken `fetch_add` queue; a relaxed plain store's rate wasn't measured), so every W03 variant also runs with 8 slots. `KernelBypass` (ring fixed at 1024) has no small-ring test.

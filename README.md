@@ -15,18 +15,18 @@
 
 Most of the project is systems programming for trading: concurrency, market data, order books and latency measurement. The quantitative part is small: an Avellaneda-Stoikov market maker, checked by rerunning the paper's simulation, and statistics and matrix templates.
 
-- **For Recruiters**: A lock-free SPSC queue checked with ThreadSanitizer and on an ARM CI runner, where a deliberately broken copy with a relaxed publish damages messages that x86 never damages; an ITCH 5.0 reader and an order-by-order book that replay a full NASDAQ day; latency reported as percentiles. Kernel bypass appears only as an in-memory model of a NIC receive ring.
+- **For Recruiters**: A lock-free SPSC queue checked with ThreadSanitizer and on an ARM CI runner, where a deliberately broken copy with a relaxed publish damages messages; on x86 it compiles to the same instructions as the correct queue and damaged none in 10M. An ITCH 5.0 reader and an order-by-order book that replay a full NASDAQ day; latency reported as percentiles. Kernel bypass appears only as an in-memory model of a NIC receive ring.
 - **For Learners**: Small pieces you can read and run on their own: the queue, the ITCH reader and two order books, the market maker, matrix and statistics templates, and software models of an FPGA pipeline and a NIC ring. Each has its own tests or program; they aren't wired into one system.
-- **For Researchers**: The Avellaneda-Stoikov reservation price and optimal spread (`include/Strategy.hpp`), unit-tested, and the paper's own simulation rerun with them ([results](#-avellaneda-stoikov-rerun)).
+- **For Researchers**: The Avellaneda-Stoikov reservation price and approximate optimal spread, the paper's equations (29) and (30) (`include/Strategy.hpp`), unit-tested, and the paper's own simulation rerun with them ([results](#-avellaneda-stoikov-rerun)).
 
 ## 🏗️ Architecture
 
-Three separate programs, each measured on its own:
+Three separate parts, each run by its own programs; none feeds another:
 
 ```mermaid
 graph TB
     subgraph replay["Market data replay: itch_replay, itch_test (one thread)"]
-        F["ITCH 5.0 file, or a gzip -dc pipe"] -->|length-prefixed messages| R["ItchReader: spans into its read buffer"]
+        F["ITCH 5.0 file, or on Linux a gzip -dc pipe"] -->|length-prefixed messages| R["ItchReader: spans into its read buffer"]
         R -->|"itch::dispatch"| B["ItchBookBuilder: one L3 book per instrument"]
         B -->|top-of-book changes| L["Listener template parameter (a counter in the benchmarks)"]
     end
@@ -50,9 +50,9 @@ ITCH data doesn't go through the queue, and the market maker runs only in its si
 
 ### Core Infrastructure
 - ✅ **Lock-Free SPSC Ring Buffer** - one producer, one consumer. Slots are claimed and published in place, as in the LMAX Disruptor, each index has its own cache line, and each side caches the other's index. ~50 ns median one-way latency between pinned cores on one CCD, ~175 ns across CCDs
-- ✅ **Thread Pinning** - pins each thread to one logical CPU (`SetThreadAffinityMask` / `pthread_setaffinity_np`) and asks for top priority (`THREAD_PRIORITY_TIME_CRITICAL` on Windows; `SCHED_FIFO` on Linux, which needs `CAP_SYS_NICE` and otherwise only prints a warning). The cores aren't isolated yet, so the OS can still preempt the spinning threads, and that sets the latency tail
-- ✅ **Buffered ITCH Reader** - reads the file into one buffer with `fread` and returns each message as a span into it: no per-message copy, and no allocation after construction. Fields are decoded at their spec offsets, not by casting to packed structs
-- ✅ **Cache Optimization** - `alignas(64)` to prevent false sharing; with both indices on one cache line the queue ran 2× slower ([measured](docs/ring_buffer_v2.md))
+- ✅ **Thread Pinning** - pins each thread to one logical CPU (`SetThreadAffinityMask` / `pthread_setaffinity_np`). With `--high-priority` the ring benchmarks also raise both threads: `THREAD_PRIORITY_TIME_CRITICAL` on Windows (the top of the normal priority class), and the maximum `SCHED_FIFO` priority on Linux, which needs `CAP_SYS_NICE` and otherwise only prints a warning. The cores aren't isolated yet, so the OS can still preempt the spinning threads, and that sets the latency tail
+- ✅ **Buffered ITCH Reader** - refills one reusable buffer (1 MiB by default) with `fread` and returns each message as a span into it: no per-message copy, and no allocation after construction unless a message is longer than the buffer, which can't happen at the default size. Fields are decoded at their spec offsets, not by casting to packed structs
+- ✅ **Cache Optimization** - `alignas(64)` to prevent false sharing. With both sides' indices packed onto one cache line, back-to-back sends took 13.4 instead of 7.0 ns per message, and once one side did 20 ns of work per message they took 4-5 ns more inside a CCD and up to 22 ns more across CCDs ([measured](docs/ring_buffer_v2.md))
 
 ### Market Microstructure
 - ✅ **Original Order Book** - the first book: each side a sorted `std::vector` of orders, and `match()` crosses the best bid and ask until they no longer overlap. Price priority only: a new order joins its price level ahead of older ones, and every trade prints at the ask. Kept as the baseline the L3 book is measured against
@@ -61,12 +61,12 @@ ITCH data doesn't go through the queue, and the market maker runs only in its si
 - ✅ **NASDAQ ITCH 5.0 Parser** - Streams NASDAQ's length-prefixed files (whole days, from a file, or on Linux from a `gzip -dc` pipe) and decodes every order message type
 
 ### Quantitative Code
-- ✅ **Avellaneda-Stoikov Market Maker** - quotes around the reservation price r = s − qγσ²(T−t) with the paper's optimal spread γσ²(T−t) + (2/γ)ln(1 + γ/k), so inventory skews both quotes and the spread narrows toward the horizon. Unit-tested against values worked out by hand, and rerun in the paper's own simulation ([results](#-avellaneda-stoikov-rerun))
+- ✅ **Avellaneda-Stoikov Market Maker** - quotes around the reservation price r = s − qγσ²(T−t) with the paper's approximate optimal spread γσ²(T−t) + (2/γ)ln(1 + γ/k), so inventory skews both quotes and the spread narrows toward the horizon. Unit-tested against values worked out by hand, and rerun in the paper's own simulation ([results](#-avellaneda-stoikov-rerun))
 - ✅ **Statistics Helpers** - mean, sample variance and standard deviation, sample covariance, and a simple moving average over `std::vector`; floating-point only, which compile-fail tests check
-- ✅ **Matrix<T>** - a dense row-major matrix template: bounds-checked access, addition, subtraction, a naive triple-loop multiply and transpose, each throwing on mismatched dimensions. Unit-tested
+- ✅ **`Matrix<T>`** - a dense row-major matrix template: bounds-checked access, transpose, and addition, subtraction and a naive triple-loop multiply, each of those three throwing on mismatched dimensions. Unit-tested
 
 ### Hardware Models
-- ✅ **FPGA-Style Pipeline Sketch** - a C++ class with three register stages clocked by `tick()`, updated back to front so each stage reads what its predecessor held the cycle before: latch a 32-bit word, keep its low 16 bits, then zero it unless it exceeds 100. Valid bits are never cleared, so it doesn't model bubbles; plain C++, not HDL
+- ✅ **FPGA-Style Pipeline Sketch** - a C++ class with three register stages: `input()` latches a 32-bit word into the first, and each `tick()` updates the other two back to front, so each reads what its predecessor held before the clock edge: keep the low 16 bits, then zero the value unless it exceeds 100. Valid bits are never cleared, so it doesn't model bubbles; plain C++, not HDL
 - ✅ **Kernel-Bypass RX Ring Model** - the receive-descriptor ring a poll-mode driver spins on, in plain memory: 1,024 descriptors, each handed between a simulated NIC thread and the polling thread by a release/acquire `ready` flag. Tested with two threads and under ThreadSanitizer; there is no real NIC or DMA
 
 ## 📊 Performance
@@ -171,9 +171,9 @@ Each harness takes `--json=FILE` for machine-readable results. `bench/compare.py
 | Symmetric, this code | 1.49 | 67.6 | 13.2 | −0.17 | 8.5 |
 | Symmetric, paper | 1.49 | 68.4 | 12.7 | 0.26 | 8.4 |
 
-- **The profits are within about 1.5 standard errors of the paper's.** A 1,000-run mean profit has a standard error of about 0.2 for the inventory strategy and 0.4 for the symmetric one.
+- **The profits are about 2 standard errors below the paper's.** A 1,000-run mean profit has a standard error of about 0.2 for the inventory strategy and 0.4 for the symmetric one, and this run's means are 0.4 and 0.8 lower. The paper's means are just as noisy, so the gap is about 1.4 standard errors of the difference between the two. Over 20 seeds the means are 64.9 and 68.2.
 - **Quoting around the reservation price halves the risk.** The profit's standard deviation drops from 13.2 to 6.6 and the final position stays near flat (std 3.0 against 8.5), for about 3 less mean profit. That trade is the point of the paper.
-- `tests/strategy_test.cpp` checks the formulas against values worked out by hand from the paper's parameters, and rounding to the cent, which always rounds outward so the quotes are never tighter than the model's.
+- `tests/strategy_test.cpp` checks the formulas against values worked out by hand from the paper's parameters, and `getQuotes`' rounding to the cent: the bid rounds down and the ask up, so the quotes are never tighter than the model's, except that a price within 10⁻¹¹ of a cent counts as on it (so binary error can't turn 0.57 into 0.56). The simulation itself quotes the unrounded prices.
 
 ## 🛠️ Build Instructions
 
@@ -276,8 +276,8 @@ gzip -dc 12302019.NASDAQ_ITCH50.gz | ./build/gcc-release/itch_replay -   # NASDA
 - **Templates and Concepts**: Concepts for ITCH handlers and top-of-book listeners, and `static_assert`s on ring sizes and pool layout, each with a compile-fail test proving the misuse is refused. With no listener, `if constexpr` leaves the notification code out entirely, which the generated assembly confirms. Also a small `Matrix<T>` class template and statistics functions that accept floating-point types only
 
 ### Quantitative Finance
-- **Market Making**: Avellaneda-Stoikov quotes: the paper's optimal spread around its reservation price, rerun in the paper's own simulation (`src/main.cpp`)
-- **Inventory Risk**: the reservation price r = s − qγσ²(T−t) moves both quotes against the position. In the paper's simulation it halves the standard deviation of profit against quoting the same spread around the mid (6.6 against 13.2), for about 3 less mean profit
+- **Market Making**: Avellaneda-Stoikov quotes: the paper's approximate optimal spread (its equations (29) and (30)) around its reservation price, rerun in the paper's own simulation (`src/main.cpp`)
+- **Inventory Risk**: the reservation price r = s − qγσ²(T−t) moves both quotes against the position. In this rerun of the paper's simulation it halves the standard deviation of profit against quoting the inventory strategy's average spread around the mid (6.6 against 13.2; the paper has 6.6 against 12.7), for about 3 less mean profit
 - **Statistics Helpers**: mean, sample variance, standard deviation, covariance and moving average, restricted to floating-point types and unit-tested. The simulation uses them for its summary; the strategy takes volatility as a fixed input
 
 ### Low-Latency Engineering
@@ -290,7 +290,7 @@ gzip -dc 12302019.NASDAQ_ITCH50.gz | ./build/gcc-release/itch_replay -   # NASDA
 
 This project demonstrates skills relevant to:
 - **Quant Developer**: C++ optimization, low-latency systems
-- **Algo Trading Engineer**: Order-by-order (L3) book reconstruction over a full NASDAQ ITCH day (268.7M messages), with checks for unknown orders, over-executions and crossed books. Each of the 4,738 crossed books is traced to a halt, a limit-up/limit-down pause or a reopening auction
+- **Algo Trading Engineer**: Order-by-order (L3) book reconstruction over a full NASDAQ ITCH day (268.7M messages), with checks for unknown orders, over-executions and crossed books. Each of the 4,738 times an add or replace left a book crossed during market hours is traced to a halt, a limit-up/limit-down pause or a reopening auction
 - **Quant Researcher**: The Avellaneda-Stoikov model implemented from the paper and checked against the paper's own simulation. There is no backtester or P&L on real data yet: no strategy runs on the replayed NASDAQ day
 - **HFT Engineer**: Lock-free SPSC queues checked by ThreadSanitizer and on ARM hardware, binary feed decoding (ITCH 5.0), and latency measured as percentiles
 
@@ -309,7 +309,7 @@ This project demonstrates skills relevant to:
 
 This is an educational project. Contributions welcome:
 - Additional quant models (Ornstein-Uhlenbeck, SABR)
-- macOS support: `ThreadUtils.hpp` pins threads with `pthread_setaffinity_np`, `cpu_set_t` and `sched_getcpu`, which macOS doesn't have
+- macOS support: `ThreadUtils.hpp` pins threads with `pthread_setaffinity_np` and `cpu_set_t` and reads the current core with `sched_getcpu`, none of which macOS has
 - A POSIX port of `Network.hpp`, which is Winsock-only, so `net_test` builds only on Windows
 - Performance optimizations
 - Documentation improvements

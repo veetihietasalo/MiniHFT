@@ -92,7 +92,7 @@ CI uses Ubuntu 24.04's clang-tidy 18. A check newer than that (`misc-use-interna
 | `msvc-release` | MSVC `/W4 /WX` build; 143 tests: 92 unit tests, 28 [compile-fail tests](verification.md#compile-fail-tests), 22 [SPSC stress tests](verification.md#memory-ordering-every-threaded-path-more-schedules) and `compare.py`'s tests |
 | `gcc-release` | GCC strict warnings with `-Werror`; the same 143 tests |
 | `gcc-debug-stl` | The same 143 tests under libstdc++ debug mode |
-| `clang-tsan` | ThreadSanitizer; 121 tests (no compile-fail tests under a sanitizer; adds the 12 program smoke tests and `TSan.CatchesRelaxedConsume`), then the 22 stress tests 10 more times with new seeds |
+| `clang-tsan` | ThreadSanitizer; 121 tests (no compile-fail or zero-allocation tests under a sanitizer; adds the 12 program smoke tests, `TSan.CatchesRelaxedPublish` and `TSan.CatchesRelaxedConsume`), then the 22 stress tests 10 more times with new seeds |
 | `clang-asan-ubsan` | AddressSanitizer + UndefinedBehaviorSanitizer; 119 tests |
 | `gcc-release (arm64)` | The same build on AArch64 (Arm Neoverse N2), where stores really are reordered; 144 tests, including one that passes only if the broken queue delivers damaged messages ([memory_ordering.md](memory_ordering.md#measured-on-arm)) |
 | `clang-tsan (arm64)` | ThreadSanitizer on AArch64; 121 tests, then the same 10 stress repeats |

@@ -26,7 +26,7 @@ See [README.md](README.md) for build instructions.
 ## Code Style
 
 - **C++ Standard**: C++20
-- **Naming**: PascalCase for classes, camelCase for functions, UPPER_CASE for constants
+- **Naming**: PascalCase for classes, camelCase for functions, `kName` for constants
 - **Comments**: Explain "why", not "what"
 - **Performance**: Prefer header-only, avoid heap allocations in hot paths
 
