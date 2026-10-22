@@ -1,6 +1,7 @@
 // Schedule stress for every single-producer / single-consumer hand-off in the project:
-// RingBuffer, the W03 study variants (bench/RingVariants.hpp), KernelBypass, and three
-// deliberately broken queues (relaxed publish, relaxed consume, off-by-one full check).
+// RingBuffer, the W03 study variants (bench/RingVariants.hpp), KernelBypass, and deliberately
+// broken queues (relaxed publish, relaxed consume, off-by-one full check, and KernelBypass with
+// either handoff relaxed).
 //
 // ThreadSanitizer only sees the interleavings that actually happen. This program runs one
 // queue under one schedule (tests/SpscStress.hpp):
@@ -28,6 +29,7 @@
 #include "KernelBypass.hpp"
 #include "OffByOneRingBuffer.hpp"
 #include "RelaxedConsumeRingBuffer.hpp"
+#include "RelaxedKernelBypass.hpp"
 #include "RelaxedPublishRingBuffer.hpp"
 #include "RingBuffer.hpp"
 #include "SpscStress.hpp"
@@ -42,10 +44,11 @@ StressResult stress(uint64_t count, StressSchedule schedule, uint64_t seed) {
 }
 
 // KernelBypass hands over one descriptor at a time through its `ready` flag rather than through
-// claim/publish/peek/consume, so it gets its own loop with the same delays. Its ring has a fixed
-// 1024 descriptors: anything past 1024 packets reuses them.
+// claim/publish/peek/consume, so it gets its own loop with the same delays. Every packet past the
+// ring size reuses a descriptor.
+template <typename Nic>
 StressResult stressKernelBypass(uint64_t count, StressSchedule schedule, uint64_t seed) {
-    auto nic = std::make_unique<KernelBypass>();
+    auto nic = std::make_unique<Nic>();
     std::thread wire([&] {
         SchedulePerturber perturb(schedule, seed ^ 0x5bd1e995ULL);
         for (uint64_t i = 0; i < count; ++i) {
@@ -84,17 +87,27 @@ constexpr QueueEntry kQueues[] = {
     {"v2-one-line", stress<RingV2<StressMessage, 1024, 1, false>>, "RingV2, both indices on one cache line"},
     {"v2-batch4", stress<RingV2<StressMessage, 1024, 4>>, "RingV2, 1024 slots, publishes every 4th message"},
     {"v2-tiny-batch", stress<RingV2<StressMessage, 4, 4>>, "RingV2, 4 slots, batch = size"},
-    {"kernel-bypass", stressKernelBypass, "KernelBypass descriptor ring, 1024 descriptors"},
+    {"kernel-bypass", stressKernelBypass<KernelBypass>, "KernelBypass descriptor ring, 1024 descriptors"},
+    {"kernel-bypass-tiny", stressKernelBypass<BasicKernelBypass<8>>, "KernelBypass descriptor ring, 8 descriptors"},
     // Deliberately broken. ThreadSanitizer should report a race in each relaxed queue, and in off-by-one
     // only in a run where a claim finds the queue full. The off-by-one queues overwrite messages on any
     // CPU. Natively on ARM, relaxed-publish-tiny delivers damaged messages too (the 1024-slot one only now
-    // and then; docs/memory_ordering.md), and relaxed-consume-tiny showed none in 300M.
+    // and then; docs/memory_ordering.md); relaxed-consume-tiny showed none in 300M, and the kb-relaxed-*
+    // copies none in 100M each.
     {"relaxed-publish", stress<RelaxedPublishRingBuffer<StressMessage, 1024>>, "BROKEN: publish() relaxed, 1024 slots"},
     {"relaxed-publish-tiny", stress<RelaxedPublishRingBuffer<StressMessage, 2>>, "BROKEN: publish() relaxed, 2 slots"},
     {"relaxed-consume", stress<RelaxedConsumeRingBuffer<StressMessage, 1024>>, "BROKEN: consume() relaxed, 1024 slots"},
     {"relaxed-consume-tiny", stress<RelaxedConsumeRingBuffer<StressMessage, 2>>, "BROKEN: consume() relaxed, 2 slots"},
     {"off-by-one", stress<OffByOneRingBuffer<StressMessage, 1024>>, "BROKEN: claim() accepts 1025 messages in 1024 slots"},
     {"off-by-one-tiny", stress<OffByOneRingBuffer<StressMessage, 2>>, "BROKEN: claim() accepts 3 messages in 2 slots"},
+    {"kb-relaxed-receive", stressKernelBypass<RelaxedKernelBypass<1024, KernelBypassBug::ReceiveRelaxed>>,
+     "BROKEN: nicReceive() stores ready relaxed, 1024 descriptors"},
+    {"kb-relaxed-receive-tiny", stressKernelBypass<RelaxedKernelBypass<8, KernelBypassBug::ReceiveRelaxed>>,
+     "BROKEN: nicReceive() stores ready relaxed, 8 descriptors"},
+    {"kb-relaxed-poll", stressKernelBypass<RelaxedKernelBypass<1024, KernelBypassBug::PollRelaxed>>,
+     "BROKEN: poll() clears ready relaxed, 1024 descriptors"},
+    {"kb-relaxed-poll-tiny", stressKernelBypass<RelaxedKernelBypass<8, KernelBypassBug::PollRelaxed>>,
+     "BROKEN: poll() clears ready relaxed, 8 descriptors"},
 };
 
 const QueueEntry* findQueue(const char* name) {

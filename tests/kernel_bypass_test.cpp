@@ -8,8 +8,8 @@
 #include "SpscStress.hpp" // stressCount
 
 namespace {
-constexpr size_t kRingSize = KernelBypass::RING_SIZE;
-constexpr auto kStressPackets = static_cast<uint32_t>(stressCount(200'000)); // 195 laps of the ring, 4,883 on ARM
+// 195 laps of the 1024 ring, 25,000 of the 8 ring; 5M packets natively on ARM.
+constexpr auto kStressPackets = static_cast<uint32_t>(stressCount(200'000));
 } // namespace
 
 TEST(KernelBypass, PollReturnsPacketsInArrivalOrder) {
@@ -24,10 +24,21 @@ TEST(KernelBypass, PollReturnsPacketsInArrivalOrder) {
     EXPECT_FALSE(nic.poll(packet));
 }
 
+// The tests below run on the production ring and on one of 8 descriptors. In the small ring every
+// descriptor changes hands every few packets, so both handoffs are exercised all the time, the
+// way the 8-slot RingBuffer and W03 tests do it. On ARM that's where a missing release shows up;
+// with 1024 slots it rarely does (docs/memory_ordering.md).
+template <typename Nic>
+class KernelBypassRing : public ::testing::Test {};
+
+using RingSizes = ::testing::Types<KernelBypass, BasicKernelBypass<8>>;
+TYPED_TEST_SUITE(KernelBypassRing, RingSizes);
+
 // A real NIC drops a packet when the driver has no free descriptor. The simulation used to
 // overwrite the unread packet instead, so packet 0 was lost.
-TEST(KernelBypass, FullRingRefusesPacketsUntilTheCpuPolls) {
-    KernelBypass nic;
+TYPED_TEST(KernelBypassRing, FullRingRefusesPacketsUntilTheCpuPolls) {
+    constexpr size_t kRingSize = TypeParam::RING_SIZE;
+    TypeParam nic;
     for (size_t i = 0; i < kRingSize; ++i) ASSERT_TRUE(nic.nicReceive(static_cast<uint32_t>(i), i));
     EXPECT_FALSE(nic.nicReceive(9999, kRingSize)); // slot 0 again, still holding packet 0
 
@@ -45,8 +56,8 @@ TEST(KernelBypass, FullRingRefusesPacketsUntilTheCpuPolls) {
 // The NIC and the CPU on two threads, many laps of the ring. Run it under the clang-tsan
 // preset: ThreadSanitizer reports a data race if either handoff of a descriptor stops
 // synchronizing, in either direction.
-TEST(KernelBypass, TwoThreadsDeliverEveryPacketInOrder) {
-    KernelBypass nic;
+TYPED_TEST(KernelBypassRing, TwoThreadsDeliverEveryPacketInOrder) {
+    TypeParam nic;
     std::thread wire([&nic] {
         for (uint32_t i = 0; i < kStressPackets; ++i) {
             while (!nic.nicReceive(i, i)) std::this_thread::yield(); // ring full: wait for the CPU

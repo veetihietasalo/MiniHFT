@@ -106,11 +106,11 @@ ThreadSanitizer already ran the unit tests, and `TSan.CatchesRelaxedPublish` pro
 
 | Tests | Builds | What they do |
 |-------|--------|--------------|
-| `Stress.<queue>.<tight\|random>`, 22 | every build, label `stress` | Every SPSC hand-off runs 100,000 messages under two schedules. **Tight** busy-spins on a full or empty queue. **Random** inserts seeded random spins, yields and rare stalls of up to 2 ms between every step, on both sides. The hand-offs: `RingBuffer`, the three W03 variants, `RingV2` batched and with both indices on one cache line, and `KernelBypass`. Each queue also runs at 2 or 4 slots, where wrap-around and the full and empty edges come every few messages. Each run picks a seed and prints it, so a failure can be replayed with [`spsc_stress`](../tests/spsc_stress.cpp). |
+| `Stress.<queue>.<tight\|random>`, 24 | every build, label `stress` | Every SPSC hand-off runs 100,000 messages under two schedules. **Tight** busy-spins on a full or empty queue. **Random** inserts seeded random spins, yields and rare stalls of up to 2 ms between every step, on both sides. The hand-offs: `RingBuffer`, the three W03 variants, `RingV2` batched and with both indices on one cache line, and `KernelBypass`. Each queue also runs at 2, 4 or 8 slots, where wrap-around and the full and empty edges come every few messages. Each run picks a seed and prints it, so a failure can be replayed with [`spsc_stress`](../tests/spsc_stress.cpp). |
 | `TSan.CatchesRelaxedConsume` | TSan | Passes only if TSan reports the race in a queue whose `consume()` is relaxed ([`tests/RelaxedConsumeRingBuffer.hpp`](../tests/RelaxedConsumeRingBuffer.hpp)), next to the existing relaxed-`publish()` test |
 | `Smoke.<program>`, 12 | sanitizer builds, label `smoke` | Every program with small inputs: `ring_latency` (paced, burst, and with a core that doesn't exist, so a failed pin must still pass), `ring_study` with and without busy work, `ring_bench`, `orderbook_latency`, `gen_itch` → `itch_test` and `itch_replay`, `MiniHFT`, `hw_bench` |
 
-The 22 stress tests take 7 s under TSan. Both `clang-tsan` CI jobs, x86-64 and ARM64, also repeat them 10 times, each repeat with new seeds: 220 runs, 33 s locally.
+The 24 stress tests take 7 s under TSan. Both `clang-tsan` CI jobs, x86-64 and ARM64, also repeat them 10 times, each repeat with new seeds: 240 runs, about 35 s locally.
 
 Every file with an atomic or a thread now has its threads run under TSan:
 
@@ -119,7 +119,7 @@ Every file with an atomic or a thread now has its threads run under TSan:
 | `include/RingBuffer.hpp` | `RingBuffer.SpscStress*`, `Stress.ring*`, `Smoke.ring_latency.*`, `Smoke.ring_study*`, `Smoke.ring_bench` |
 | `bench/RingVariants.hpp` | `RingVariantTest/*`, `Stress.v0*`, `Stress.v1*`, `Stress.v2*`, `Smoke.ring_study*` (all eight variants) |
 | `bench/RingHarness.hpp` | `Smoke.ring_latency.*`, `Smoke.ring_study*` |
-| `include/KernelBypass.hpp` | `KernelBypass.TwoThreadsDeliverEveryPacketInOrder`, `Stress.kernel-bypass.*` |
+| `include/KernelBypass.hpp` | `KernelBypassRing/*.TwoThreadsDeliverEveryPacketInOrder` (1024 and 8 descriptors), `Stress.kernel-bypass*` |
 | `include/ThreadUtils.hpp` | `ThreadUtils.*`; both threads pinning at once in every ring smoke test, and both reporting a failed pin at once in `Smoke.ring_latency.unpinned` |
 
 `include/Network.hpp` and `src/net_test.cpp` are Windows-only, so they aren't covered. No correct queue showed a problem under any schedule.
