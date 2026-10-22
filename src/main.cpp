@@ -1,77 +1,101 @@
-#include <chrono>
-#include <iostream>
+#include <cmath>
+#include <cstdio>
+#include <exception>
 #include <random>
-#include <thread>
+#include <vector>
 
-#include "MarketSimulator.hpp"
 #include "Order.hpp"
-#include "OrderBook.hpp"
+#include "Statistics.hpp"
 #include "Strategy.hpp"
 
-int main() {
-    std::cout << "MiniHFT Engine Starting (Strategy Mode)...\n";
+// Avellaneda & Stoikov's own simulation, run with MarketMakerStrategy. Each step of dt the mid
+// moves up or down by sigma sqrt(dt) with equal probability, and each quote is hit with
+// probability A exp(-k delta) dt, where delta is its distance from the mid. A fill is one unit.
+// The paper compares its inventory strategy with a symmetric one that quotes the same spread
+// around the mid instead of around the reservation price; so does this program.
+namespace {
 
-    OrderBook book;
-    // Start price $100, Volatility 0.5
-    MarketSimulator sim(100.0, 0.5);
-    // Gamma (Risk Aversion) = 0.1, Sigma (Vol) = 0.5
-    MarketMakerStrategy strategy(0.1, 0.5);
+constexpr double kGamma = 0.1, kSigma = 2.0, kK = 1.5, kA = 140.0, kT = 1.0, kS0 = 100.0;
+constexpr int kSteps = 200; // dt = T / 200 = 0.005
+constexpr double kDt = kT / kSteps;
+constexpr int kRuns = 1000;
 
-    double currentMidPrice = 100.0;
-    std::mt19937 rng(42); // fixed seed: every run drifts the same way
-    std::uniform_int_distribution<int> driftCents(-50, 49);
+struct Run {
+    double pnl;        // cash plus the final inventory at the final mid
+    double inventory;  // final inventory
+    double meanSpread; // the quoted spread averaged over the run
+};
 
-    for (int i = 0; i < 50; ++i) {
-        // 1. Strategy places quotes based on current mid price and inventory
-        auto [bidPrice, askPrice] = strategy.getQuotes(currentMidPrice);
+// `print` shows every 25th step of this run.
+Run simulate(std::mt19937_64& rng, bool aroundReservation, bool print) {
+    MarketMakerStrategy mm(kGamma, kSigma, kK, kT);
+    std::bernoulli_distribution up(0.5);
+    std::uniform_real_distribution<double> uniform(0.0, 1.0);
+    const double move = kSigma * std::sqrt(kDt);
 
-        // Place MM Orders (cancel previous would be ideal, but for now just add new)
-        // In a real system, we'd update existing orders to avoid message traffic
-        book.addOrder(Order(static_cast<OrderId>(1000 + i), Side::Buy, bidPrice, 10));
-        book.addOrder(Order(static_cast<OrderId>(2000 + i), Side::Sell, askPrice, 10));
-
-        std::cout << "MM Quotes: " << bidPrice << " @ " << askPrice
-                  << " [Inv: " << strategy.getInventory() << "]\n";
-
-        // 2. Simulator generates random market flow
-        Order marketOrder = sim.generateOrder();
-        // Force simulator order to be aggressive to trigger trades against MM
-        if (marketOrder.side == Side::Buy) marketOrder.price = 9999.0; // Market Buy
-        else marketOrder.price = 0.01; // Market Sell
-
-        // Only trade sometimes to simulate liquidity taking
-        if (i % 3 == 0) {
-            book.addOrder(marketOrder);
+    double s = kS0, cash = 0.0, spreadSum = 0.0;
+    for (int i = 0; i < kSteps; ++i) {
+        const double t = i * kDt;
+        const double spread = mm.getSpread(t);
+        const double centre = aroundReservation ? mm.getReservationPrice(s, t) : s;
+        const double bid = centre - spread / 2.0, ask = centre + spread / 2.0;
+        spreadSum += spread;
+        if (print && i % 25 == 0) {
+            std::printf("  t %.3f  mid %7.2f  inventory %+3d  quotes %7.2f @ %7.2f\n", t, s, mm.getInventory(), bid, ask);
         }
 
-        // 3. Match
-        auto trades = book.match();
-
-        if (!trades.empty()) {
-            for (const auto& t : trades) {
-                // Update Strategy Inventory
-                // Assuming MM was always on the other side of the trade
-                // If Market Order was Buy, MM Sold (Inventory -)
-                // If Market Order was Sell, MM Bought (Inventory +)
-                Side mmSide = (marketOrder.side == Side::Buy) ? Side::Sell : Side::Buy;
-                strategy.onTrade(t, mmSide);
-
-                std::cout << "    >>> TRADE! " << t.quantity << " @ " << t.price
-                          << " (MM " << (mmSide == Side::Buy ? "Bought" : "Sold") << ")\n";
-            }
+        if (uniform(rng) < kA * std::exp(-kK * (s - bid)) * kDt) {
+            cash -= bid;
+            mm.onTrade(Trade{bid, 1, 0, 0, 0}, Side::Buy);
         }
-
-        // Update "Mid Price" for next tick (simulating market move)
-        // In reality, mid price comes from the book, but here we simulate the "fair value" moving
-        currentMidPrice = marketOrder.price; // This is wrong, market order price is aggressive
-        // Let's just drift the mid price randomly
-        currentMidPrice += driftCents(rng) / 100.0;
-        if (currentMidPrice < 0) currentMidPrice = 100.0;
-
-        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        if (uniform(rng) < kA * std::exp(-kK * (ask - s)) * kDt) {
+            cash += ask;
+            mm.onTrade(Trade{ask, 1, 0, 0, 0}, Side::Sell);
+        }
+        s += up(rng) ? move : -move;
     }
+    const double q = mm.getInventory();
+    return { cash + q * s, q, spreadSum / kSteps };
+}
 
-    std::cout << "\nFinal Inventory: " << strategy.getInventory() << "\n";
+void summarize(const char* name, const std::vector<Run>& runs) {
+    std::vector<double> pnl, inventory, spread;
+    for (const Run& r : runs) {
+        pnl.push_back(r.pnl);
+        inventory.push_back(r.inventory);
+        spread.push_back(r.meanSpread);
+    }
+    std::printf("%-20s %8.2f %10.2f %12.2f %12.2f %14.2f\n", name, Statistics::mean(spread), Statistics::mean(pnl),
+                Statistics::stdDev(pnl), Statistics::mean(inventory), Statistics::stdDev(inventory));
+}
 
+int run() {
+    std::printf("Avellaneda-Stoikov simulation: gamma %.1f, sigma %.0f, k %.1f, A %.0f, T %.0f, dt %.3f, s0 %.0f\n\n",
+                kGamma, kSigma, kK, kA, kT, kDt, kS0);
+    std::mt19937_64 rng(42); // fixed seed: the same output every run
+
+    std::printf("One run of the inventory strategy:\n");
+    simulate(rng, true, true);
+
+    std::vector<Run> inventoryRuns, symmetricRuns;
+    for (int i = 0; i < kRuns; ++i) {
+        inventoryRuns.push_back(simulate(rng, true, false));
+        symmetricRuns.push_back(simulate(rng, false, false));
+    }
+    std::printf("\n%d runs each:\n%-20s %8s %10s %12s %12s %14s\n", kRuns, "Strategy", "Spread", "Profit", "Std(profit)",
+                "Final q", "Std(final q)");
+    summarize("Inventory", inventoryRuns);
+    summarize("Symmetric", symmetricRuns);
     return 0;
+}
+
+} // namespace
+
+int main() {
+    try {
+        return run();
+    } catch (const std::exception& e) { // MarketMakerStrategy rejects parameters the model can't use
+        std::fprintf(stderr, "%s\n", e.what());
+        return 1;
+    }
 }
