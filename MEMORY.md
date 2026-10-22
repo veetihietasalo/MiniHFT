@@ -72,6 +72,16 @@ Durable context for agent sessions on MiniHFT: facts that are expensive to redis
 ## Conventions
 
 - **Teach while building (the owner's standing request, 2026-10-21).** Explain each decision as you make it, and why the alternatives lost; compare the C++ with how Java does the same thing; tie it to what a quant developer needs to know. Offer an audio version of longer lessons (see the TTS note above).
+- **The owner's learning plan (2026-10-22): practice code is theirs; agents grade it, never write it.** The goal is quant-developer interviews (C++, low latency). A mock interview on `RingBuffer` scored 7/15:
+  - Strong: memory-ordering reasoning. They got the consume/claim handoff unaided, and release/acquire and x86 vs ARM after one hint.
+  - Missed: full/empty with ever-growing indices, and the power-of-two capacity (both recalled with help). They couldn't write `claim()`/`publish()` from a blank file even when guided.
+  - Diagnosis: courses and agent-written code trained recognition, not writing code from memory.
+  - What helps:
+    - The daily from-memory file: `Desktop\RingBufferPractice` on their Windows PC, opened by a scheduled task at 18:00, with tests and a ThreadSanitizer command in the template.
+    - Before trusting a component an agent wrote, they explain it back.
+    - Interviews one question at a time: a hint before the answer, scored 0–3, then they say it back from memory.
+    - A re-interview about a week later, compared against the 7/15.
+  - Language: they reason more precisely in English. Explain in Finnish if that helps, but have them answer interviews in English, the language firms interview in. Kokoro has no Finnish voice.
 - **GCC 13 at `-O3` can raise a false `-Warray-bounds`** ("forming offset 80 is out of the bounds [0, 80]" in a `std::vector` memmove), which `-Werror` turns into a failed build. Rebuilt on GCC 13.3, it comes from `erase(begin())` in `OrderBook::match()` when a fresh `OrderBook` is built every loop step (a draft `src/main.cpp`, never committed); inserts alone don't raise it. Change the code's shape rather than add a pragma or drop the flag.
 - **Numbers from papers or specs come from the document, not memory.** A recalled Avellaneda-Stoikov Table 1 (62.9 and 67.2) was wrong; the PDF says 65.0 and 68.4. Have an agent read the primary source before a figure goes into a doc.
 - **README Markdown:** put template names in backticks (`` `Matrix<T>` ``). GitHub strips a bare `<T>` as an HTML tag.
