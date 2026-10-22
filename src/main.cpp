@@ -11,8 +11,9 @@
 // Avellaneda & Stoikov's own simulation, run with MarketMakerStrategy. Each step of dt the mid
 // moves up or down by sigma sqrt(dt) with equal probability, and each quote is hit with
 // probability A exp(-k delta) dt, where delta is its distance from the mid. A fill is one unit.
-// The paper compares its inventory strategy with a symmetric one that quotes the same spread
-// around the mid instead of around the reservation price; so does this program.
+// The paper compares its inventory strategy with a symmetric one, which quotes the inventory
+// strategy's average spread, held constant, around the mid instead of around the reservation
+// price; so does this program.
 namespace {
 
 constexpr double kGamma = 0.1, kSigma = 2.0, kK = 1.5, kA = 140.0, kT = 1.0, kS0 = 100.0;
@@ -26,8 +27,17 @@ struct Run {
     double meanSpread; // the quoted spread averaged over the run
 };
 
+// The inventory strategy's spread averaged over the steps: the symmetric strategy's constant spread.
+double averageSpread() {
+    const MarketMakerStrategy mm(kGamma, kSigma, kK, kT);
+    double sum = 0.0;
+    for (int i = 0; i < kSteps; ++i) sum += mm.getSpread(i * kDt);
+    return sum / kSteps;
+}
+
 // `print` shows every 25th step of this run.
 Run simulate(std::mt19937_64& rng, bool aroundReservation, bool print) {
+    static const double symmetricSpread = averageSpread();
     MarketMakerStrategy mm(kGamma, kSigma, kK, kT);
     std::bernoulli_distribution up(0.5);
     std::uniform_real_distribution<double> uniform(0.0, 1.0);
@@ -36,12 +46,13 @@ Run simulate(std::mt19937_64& rng, bool aroundReservation, bool print) {
     double s = kS0, cash = 0.0, spreadSum = 0.0;
     for (int i = 0; i < kSteps; ++i) {
         const double t = i * kDt;
-        const double spread = mm.getSpread(t);
+        const double spread = aroundReservation ? mm.getSpread(t) : symmetricSpread;
         const double centre = aroundReservation ? mm.getReservationPrice(s, t) : s;
         const double bid = centre - spread / 2.0, ask = centre + spread / 2.0;
         spreadSum += spread;
         if (print && i % 25 == 0) {
-            std::printf("  t %.3f  mid %7.2f  inventory %+3d  quotes %7.2f @ %7.2f\n", t, s, mm.getInventory(), bid, ask);
+            std::printf("  t %.3f  mid %7.2f  inventory %+3lld  quotes %7.2f @ %7.2f\n", t, s,
+                        static_cast<long long>(mm.getInventory()), bid, ask);
         }
 
         if (uniform(rng) < kA * std::exp(-kK * (s - bid)) * kDt) {
@@ -54,7 +65,7 @@ Run simulate(std::mt19937_64& rng, bool aroundReservation, bool print) {
         }
         s += up(rng) ? move : -move;
     }
-    const double q = mm.getInventory();
+    const auto q = static_cast<double>(mm.getInventory());
     return { cash + q * s, q, spreadSum / kSteps };
 }
 

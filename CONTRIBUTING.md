@@ -7,7 +7,7 @@ Thank you for your interest in contributing! This is an educational project focu
 ### 1. Code Contributions
 - Additional quantitative models (Ornstein-Uhlenbeck, SABR volatility)
 - Performance optimizations
-- Cross-platform support (Linux/Mac)
+- macOS support (`ThreadUtils.hpp` uses `pthread_setaffinity_np`, `cpu_set_t` and `sched_getcpu`, which macOS lacks) and a POSIX port of the Winsock-only `Network.hpp`
 - Additional benchmarks
 
 ### 2. Documentation

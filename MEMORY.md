@@ -6,6 +6,8 @@ Durable context for agent sessions on MiniHFT: facts that are expensive to redis
 
 - **Windows prep for native Ubuntu (PR #16, 2026-10-21):** `bench/prepare_native_linux.ps1`, linked from `docs/native_linux.md`. It has never run on Windows: reviews fixed real bugs, but nothing has tested it there. Have the user run `-WhatIf` first and read its output with them before the real run.
   - Ubuntu Server's installer (subiquity, 24.04.5 and main as of 2026-10-20) defaults to storage version 1, which shows no free space on a disk that already has partitions. Next to Windows on one disk, boot the stick with `subiquity-storage-version=2` before `---` on the `linux` line (after `---` it carries into the installed system). The existing ESP is then picked as `/boot/efi` by itself. Checked against the code the ISO ships and a simulation of its storage model.
+- **Avellaneda-Stoikov (2026-10-22):** `include/Strategy.hpp` implements the paper's equations (29) and (30), and `src/main.cpp` (the `MiniHFT` program) reruns its section 3.3 simulation. The paper's Table 1 (γ = 0.1, checked against the PDF): inventory 1.49 / 65.0 / 6.6 / 0.08 / 2.9, symmetric 1.49 / 68.4 / 12.7 / 0.26 / 8.4 (spread, profit, std, final q, std). Seed 42 gives 64.6 / 6.6 and 67.6 / 13.2; over 20 seeds the profits average about 64.9 and 68.2. The symmetric strategy quotes the inventory strategy's average spread, held constant. `MarketSimulator.hpp` has no users since.
+- **README overclaims fixed (2026-10-22):** every claim outside Performance was audited against the code. Keep new README claims to what the code shows: no "engine", "production-grade", "zero-copy mapping" or hardware-acceleration wording for the toy models (`FpgaPipeline.hpp`, `KernelBypass.hpp`).
 - **README "At a glance" (PR #16):** it repeats headline numbers that the README's own Performance sections, its feature list and `docs/ring_buffer_v2.md`, `docs/order_book.md`, `docs/zero_overhead.md` and `docs/memory_ordering.md` also state. When one changes, update every copy.
 - **Platforms (since PR #10, 2026-10-07):** Windows x64 (MSVC), Linux x86-64 and Linux AArch64 (GCC 13 / Clang 18). `include/Tsc.hpp` reads the TSC on x86 and `CNTVCT_EL0` on AArch64. Other ARM toolchains, such as MSVC ARM64, still hit its `#error`.
 - **Verification tools (since PR #11, 2026-10-07):** one check per area where AI-written C++ goes wrong. The map and every measurement are in [`docs/verification.md`](docs/verification.md).
@@ -16,9 +18,9 @@ Durable context for agent sessions on MiniHFT: facts that are expensive to redis
   - Both clang-tsan jobs run the `stress` label 10 more times with new seeds.
   - The x86 job names are unchanged, so any required checks still match.
 - **Test counts:**
-  - 133 on gcc-release x86, gcc-debug-stl and MSVC: 82 unit, 28 `CompileFail.*`, 22 `Stress.*`, and `BenchTools.ComparePy`.
-  - 134 on gcc-release arm64, which adds `ARM.RelaxedPublishDamagesMessages`.
-  - Sanitizer builds skip the compile-fail tests and add 12 `Smoke.*`: 111 on clang-tsan (both architectures, with `TSan.CatchesRelaxedConsume`), 109 on clang-asan-ubsan.
+  - 143 on gcc-release x86, gcc-debug-stl and MSVC: 92 unit, 28 `CompileFail.*`, 22 `Stress.*`, and `BenchTools.ComparePy`.
+  - 144 on gcc-release arm64, which adds `ARM.RelaxedPublishDamagesMessages`.
+  - Sanitizer builds skip the compile-fail tests and add 12 `Smoke.*`: 121 on clang-tsan (both architectures, with `TSan.CatchesRelaxedConsume`), 119 on clang-asan-ubsan.
 - **Still open:**
   - `Network.hpp` is Winsock-only (W09).
   - The SPSC unit stress tests send 5M messages natively on AArch64 (`stressCount()` in `tests/SpscStress.hpp`, since PR #13). x86 and TSan keep 100k–300k. With 1024 slots, even 5M messages catch a relaxed `publish()` only now and then. The 8-slot rings catch it in most runs (1 to 1,500 damaged per 5M at the GCC rates measured on the broken `fetch_add` queue; a relaxed plain store's rate wasn't measured), so every W03 variant also runs with 8 slots. `KernelBypass` (ring fixed at 1024) has no small-ring test.
