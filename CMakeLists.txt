@@ -130,6 +130,7 @@ if(MINIHFT_BUILD_TESTS)
         tests/order_index_test.cpp
         tests/ring_buffer_test.cpp
         tests/ring_variants_test.cpp
+        tests/strategy_test.cpp
         tests/thread_utils_test.cpp
         tests/tsc_test.cpp)
     # The zero-allocation tests replace global operator new/delete for the test binary. Sanitizer
